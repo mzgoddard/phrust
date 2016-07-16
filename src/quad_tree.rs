@@ -2,27 +2,36 @@ use std::iter;
 use std::collections::linked_list;
 use std::collections::LinkedList;
 
-struct QuadTree<T> {
+pub trait TreeSplitable {
+  fn tree_split(&mut self, children: &mut [&mut Self]) {}
+}
+
+pub trait TreeJoinable {
+  fn tree_join(&mut self, children: & [&Self]) {}
+}
+
+#[derive(Default)]
+pub struct QuadTree<T> where T: TreeSplitable + TreeJoinable + Default {
   value: T,
   children: Option<Box<[QuadTree<T>; 4]>>,
 }
 
-struct QuadTreeIterEntry<'a, T: 'a> {
+struct QuadTreeIterEntry<'a, T: 'a> where T: TreeSplitable + TreeJoinable + Default {
   node: &'a QuadTree<T>,
   childIndex: usize,
 }
 
-struct QuadTreeIter<'a, T: 'a> {
+struct QuadTreeIter<'a, T: 'a> where T: TreeSplitable + TreeJoinable + Default {
   visiting: LinkedList<QuadTreeIterEntry<'a, T>>,
   visiting_back: LinkedList<QuadTreeIterEntry<'a, T>>,
 }
 
-struct QuadTreeIterMutEntry<'a, T: 'a> {
+struct QuadTreeIterMutEntry<'a, T: 'a> where T: TreeSplitable + TreeJoinable + Default {
   node: &'a mut QuadTree<T>,
   childIndex: usize,
 }
 
-struct QuadTreeIterMut<'a, T: 'a> {
+struct QuadTreeIterMut<'a, T: 'a> where T: TreeSplitable + TreeJoinable + Default {
   // visit_push: &'a Fn(&'a mut QuadTree<T>),
   // visit_pop: &'a Fn(),
   // visit_push_back: &'a Fn(&'a mut QuadTree<T>),
@@ -43,7 +52,7 @@ struct QuadTreeRefStack<'a, T: 'a> {
 //   iter: LinkedList::IterMut<&'a mut T>,
 // }
 
-struct QuadTreeIterMutStack<'a, T: 'a> {
+struct QuadTreeIterMutStack<'a, T: 'a> where T: TreeSplitable + TreeJoinable + Default {
   // bound_visit_push: Box<Fn(&'a mut QuadTree<T>)>,
   // bound_visit_pop: Box<Fn()>,
   // bound_visit_push_back: Box<Fn(&'a mut QuadTree<T>)>,
@@ -57,32 +66,108 @@ struct QuadTreeIterMutStack<'a, T: 'a> {
   // iter: QuadTreeIterMut<'a, T>,
 }
 
-impl<T> QuadTree<T> {
-  fn new(value: T) -> QuadTree<T> {
+impl<T> QuadTree<T> where T: TreeSplitable + TreeJoinable + Default {
+  pub fn new(value: T) -> QuadTree<T> {
     QuadTree::<T> {
       value: value,
       children: None,
     }
   }
 
-  fn split(&mut self) {}
+  // fn children_as_slice<'a>(&'a self) -> [&'a T] {
+  //   match self.children {
+  //     Some(ref children) => {
+  //       [
+  //         &children[0].value,
+  //         &children[1].value,
+  //         &children[2].value,
+  //         &children[3].value,
+  //       ][..]
+  //     },
+  //     _ => {[].into_slice()},
+  //   }
+  // }
+  //
+  // fn children_as_mut_slice<'a>(&'a self) -> [&'a mut T] {
+  //   match self.children {
+  //     Some(ref mut children) => {
+  //       [
+  //         &mut children[0].value,
+  //         &mut children[1].value,
+  //         &mut children[2].value,
+  //         &mut children[3].value,
+  //       ].into_slice()
+  //     },
+  //     _ => {[].into_slice()},
+  //   }
+  // }
 
-  fn join(&mut self) {}
+  pub fn split(&mut self) {
+    self.children = Some(Box::new([
+      QuadTree::<T> {
+        value: T::default(),
+        children: None,
+      },
+      QuadTree::<T> {
+        value: T::default(),
+        children: None,
+      },
+      QuadTree::<T> {
+        value: T::default(),
+        children: None,
+      },
+      QuadTree::<T> {
+        value: T::default(),
+        children: None,
+      },
+    ]));
+    match self.children {
+      Some(ref mut children) => {
+        let mut children_array = unsafe {
+          [
+            &mut *(&mut children[0].value as *mut T) as &mut T,
+            &mut *(&mut children[1].value as *mut T) as &mut T,
+            &mut *(&mut children[2].value as *mut T) as &mut T,
+            &mut *(&mut children[3].value as *mut T) as &mut T,
+          ]
+        };
+        self.value.tree_split(children_array.as_mut());
+      },
+      _ => {},
+    }
+    // self.value.tree_split(&mut self.children_as_mut_slice());
+  }
 
-  fn iter(&self) -> QuadTreeIter<T> {
+  pub fn join(&mut self) {
+    match self.children {
+      Some(ref children) => {
+        self.value.tree_join([
+          &children[0].value,
+          &children[1].value,
+          &children[2].value,
+          &children[3].value,
+        ].as_ref());
+      },
+      _ => {},
+    }
+    // self.value.tree_join(& self.children_as_slice());
+    self.children = None;
+  }
+
+  pub fn iter(&self) -> QuadTreeIter<T> {
     QuadTreeIter::<T>::new(self)
   }
 
-  fn iter_mut(&mut self) -> QuadTreeIterMut<T> {
+  pub fn iter_mut(&mut self) -> QuadTreeIterMut<T> {
     QuadTreeIterMut::<T>::new(self)
   }
 
-  fn iter_stack_mut(&mut self) -> QuadTreeIterMutStack<T> {
+  pub fn iter_stack_mut(&mut self) -> QuadTreeIterMutStack<T> {
     QuadTreeIterMutStack::<T>::new(self)
   }
 }
 
-impl<'a, T> QuadTreeIter<'a, T> {
+impl<'a, T> QuadTreeIter<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   fn new(node: &'a QuadTree<T>) -> QuadTreeIter<'a, T> {
     let mut iter = QuadTreeIter::<T> {
       visiting: LinkedList::<QuadTreeIterEntry<T>>::new(),
@@ -229,7 +314,7 @@ impl<'a, T> QuadTreeIter<'a, T> {
   }
 }
 
-impl<'a, T> Iterator for QuadTreeIter<'a, T> {
+impl<'a, T> Iterator for QuadTreeIter<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   type Item = &'a QuadTree<T>;
 
   fn next(&mut self) -> Option<Self::Item> {
@@ -245,7 +330,7 @@ impl<'a, T> Iterator for QuadTreeIter<'a, T> {
   }
 }
 
-impl<'a, T> DoubleEndedIterator for QuadTreeIter<'a, T> {
+impl<'a, T> DoubleEndedIterator for QuadTreeIter<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   fn next_back(&mut self) -> Option<Self::Item> {
     let result = match self.visiting_back.back() {
       Some(ref entry) => {
@@ -374,10 +459,10 @@ fn test_deeper_quad_tree_next_back() {
 // const push_noop : Fn(&'a mut QuadTree<T>) = |x| {};
 // const pop_noop = || {};
 
-fn push_noop<T>(x: &mut QuadTree<T>) {}
-fn pop_noop() {}
+// fn push_noop<T>(x: &mut QuadTree<T>) {}
+// fn pop_noop() {}
 
-impl<'a, T> QuadTreeIterMut<'a, T> {
+impl<'a, T> QuadTreeIterMut<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   fn new(node: &'a mut QuadTree<T>) -> QuadTreeIterMut<'a, T> {
     let mut iter = QuadTreeIterMut::<T> {
       // visit_push: &push_noop,
@@ -541,7 +626,7 @@ impl<'a, T> QuadTreeIterMut<'a, T> {
   }
 }
 
-impl<'a, T> Iterator for QuadTreeIterMut<'a, T> {
+impl<'a, T> Iterator for QuadTreeIterMut<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   type Item = &'a mut QuadTree<T>;
 
   fn next(&mut self) -> Option<Self::Item> {
@@ -559,7 +644,7 @@ impl<'a, T> Iterator for QuadTreeIterMut<'a, T> {
   }
 }
 
-impl<'a, T> DoubleEndedIterator for QuadTreeIterMut<'a, T> {
+impl<'a, T> DoubleEndedIterator for QuadTreeIterMut<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   fn next_back(&mut self) -> Option<Self::Item> {
     let result = match self.visiting_back.back_mut() {
       Some(ref mut entry) => {
@@ -628,7 +713,7 @@ impl<'a, T> QuadTreeRefStack<'a, T> {
 //   }
 // }
 
-impl<'a, T> QuadTreeIterMutStack<'a, T> {
+impl<'a, T> QuadTreeIterMutStack<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   fn new(node: &'a mut QuadTree<T>) -> QuadTreeIterMutStack<'a, T> {
     let mut iter = QuadTreeIterMutStack::<T> {
       // visit_push: &push_noop,
@@ -820,7 +905,7 @@ impl<'a, T> QuadTreeIterMutStack<'a, T> {
   }
 }
 
-impl<'a, T> Iterator for QuadTreeIterMutStack<'a, T> {
+impl<'a, T> Iterator for QuadTreeIterMutStack<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   type Item = &'a mut QuadTreeRefStack<'a, T>;
 
   fn next(&mut self) -> Option<Self::Item> {
@@ -838,7 +923,7 @@ impl<'a, T> Iterator for QuadTreeIterMutStack<'a, T> {
   }
 }
 
-impl<'a, T> DoubleEndedIterator for QuadTreeIterMutStack<'a, T> {
+impl<'a, T> DoubleEndedIterator for QuadTreeIterMutStack<'a, T> where T: TreeSplitable + TreeJoinable + Default {
   fn next_back(&mut self) -> Option<Self::Item> {
     self.check_end();
     self.step_back_down();
@@ -1121,3 +1206,50 @@ fn test_quad_tree_iter_stack_mut_rev() {
     assert_eq!(iter.next().is_none(), true);
   }
 }
+
+impl TreeSplitable for i32 {
+  fn tree_split(&mut self, children: &mut [&mut i32]) {
+    *children[0] = *self / 4 + *self % 4;
+    *children[1] = *self / 4;
+    *children[2] = *self / 4;
+    *children[3] = *self / 4;
+    *self = 0;
+  }
+}
+
+impl TreeJoinable for i32 {
+  fn tree_join(&mut self, children: &[&i32]) {
+    *self = *children[0] + *children[1] + *children[2] + *children[3];
+  }
+}
+
+#[test]
+fn test_quad_tree_split() {
+  let mut tree = QuadTree::<i32>::new(8);
+  tree.split();
+  let mut iter = tree.iter();
+  assert_eq!(iter.next().unwrap().value, 2);
+  assert_eq!(iter.next().unwrap().value, 2);
+  assert_eq!(iter.next().unwrap().value, 2);
+  assert_eq!(iter.next().unwrap().value, 2);
+  assert_eq!(iter.next().unwrap().value, 0);
+  assert_eq!(iter.next().is_none(), true);
+}
+
+#[test]
+fn test_quad_tree_join() {
+  let mut tree = QuadTree::<i32> {
+    value: 0,
+    children: Some(Box::new([
+      QuadTree::<i32>::new(1),
+      QuadTree::<i32>::new(2),
+      QuadTree::<i32>::new(3),
+      QuadTree::<i32>::new(4),
+    ])),
+  };
+  tree.join();
+  let mut iter = tree.iter();
+  assert_eq!(iter.next().unwrap().value, 10);
+  assert_eq!(iter.next().is_none(), true);
+}
+

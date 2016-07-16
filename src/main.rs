@@ -5,7 +5,7 @@ mod particle;
 mod collision;
 mod ddvt;
 // mod ddvt_impl;
-// mod quad_tree;
+mod quad_tree;
 
 pub fn main() {
   println!("Hello World");
