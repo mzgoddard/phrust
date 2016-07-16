@@ -1,25 +1,232 @@
+#![feature(test)]
+
 use std::f64::EPSILON;
-use std::num::Float;
+// use std::num::Float;
 use super::particle::Particle;
 use super::collision::Collision;
 use super::math::*;
+
+// struct VolumeNode {
+//   bb: BB,
+//   children: Option<Box<[VirtualVolumeIds; 4]>>,
+//   // in maintenance tracks particles moving between parents to reduce extra work
+//   adds: [ParticleId; 256],
+//   lastAdd: u32,
+//   // a parent holds the particle
+//   overlaps: [ParticleId; 256],
+//   lastOverlap: u32,
+//   // fully holds the particle
+//   contains: Vec<ParticleId>,
+//   containAdds: Vec<ParticleId>,
+// }
+//
+// struct VolumeRoot {
+//   top: VolumeNode,
+//   meta: Vec<ParticleMeta>,
+// }
+//
+// struct ParticleMeta {
+//   // position particle was at last frame
+//   old_position: V2,
+// }
+//
+// struct ParticleCopy {
+//   id: usize,
+//   position: V2,
+//   last_position: V2,
+//   acceleration: V2,
+//   radius: f32,
+//   mass: f32,
+//   friction: f32,
+//   bb: BB,
+// }
+//
+// struct ParticleBox {
+//   id: usize,
+//   bb: BB,
+// }
+//
+// struct VolumeCopy {
+//   overlaps: [ParticleCopy; 256],
+// }
+//
+// struct VolumeNodeChildrenMutIter {
+//   index: usize,
+//   node: &mut VolumeNode,
+// }
+//
+// impl Iterator for VolumeNodeChildrenMutIter {
+//   type Item = &mut VolumeNode;
+//
+//   fn next(&mut self) -> Option<Self::Item> {
+//     if (self.index < 4) {
+//       Some(&mut self.children.unwrap()[self.index].borrow_mut())
+//     }
+//     None
+//   }
+// }
+//
+// type VolumeNodeIter = Iterator<&mut VolumeNode>;
+// type VolumeNodeIterVec = Vec<VolumeNodeIter>;
+//
+// struct VolumeNodeWalkIter {
+//   stack: VolumeNodeIterVec,
+// }
+//
+// impl VolumeNodeWalkIter {
+//   fn new() -> VolumeNodeWalkIter {
+//     VolumeNodeWalkIter {
+//       stack: VolumeNodeIterVec::new(),
+//     }
+//   }
+// }
+//
+// impl Iterator for VolumeNodeWalkUpMutIter {
+//   type Item = &mut VolumeNode;
+//
+//   fn next(&mut self) -> Option<Self::Item> {
+//     if (self.stack.len()) {
+//     }
+//   }
+// }
+//
+// impl VolumeNode {
+//   fn split(self) {
+//   }
+//
+//   fn join(self) {
+//   }
+//
+//   fn apply_containees(self) {
+//   }
+//
+//   fn apply_adds(self) {
+//   }
+//
+//   fn add_to_smallest_container(self, partilceId: usize, bb: BB) {
+//   }
+//
+//   fn has_children(self) -> bool {
+//     self.children.is_some()
+//   }
+//
+//   fn has_deep_children(self) -> bool {
+//     match (self.children) {
+//       Some(children) => children.borrow()[0].has_children(),
+//       None => false
+//     }
+//   }
+//
+//   fn children_mut(self) -> IterMut<VolumeNode> {
+//     self.children.iter_mut()
+//   }
+//
+//   fn walk_up_mut(self) -> IterMut<VolumeNode> {
+//     let stack = Vec::<&mut VolumeNode, IterMut<VolumeNode>>::new();
+//     let maybeNode = Some(self);
+//     while (match (maybeNode) {
+//       Some(node) => true,
+//       None => false,
+//     }) {
+//       let iter = node.children_mut();
+//       maybeNode = iter.next();
+//       stack.push((node, iterx));
+//     }
+//   }
+//
+//   fn walk_down_mut(self) -> IterMut<VolumeNode> {
+//
+//   }
+//
+//   fn nodes_mut(self) -> IterMut<VolumeNode> {
+//     self.walk_down_mut().filter(|&mut node| node.has_children())
+//   }
+//
+//   fn leaves_mut(self) -> IterMut<VolumeNode> {
+//     self.walk_down_mut().filter(|&mut node| !node.has_children())
+//   }
+// }
+//
+// impl VolumeRoot {
+//   fn update(self, particles: &Vec<Particle>) {
+//     // determine particles moving to different containing nodes
+//     let uncontained = Vec::<ParticleBox>::new();
+//     for node in self.top.walk_up() {
+//       uncontained.retain(|&mut particle_box| {
+//         if (node.bb.contains(particle_box.bb)) {
+//           node.add_to_smallest_container(particle_id, bb);
+//           false
+//         }
+//         true
+//       });
+//       for particle_id in node.contains.iter() {
+//         let bb = particles[particle_id].bb;
+//         let old_bb = self.meta[particle_id].old_bb;
+//         for leaf in node.leaves().filter(|&leaf| leaf.bb.overlaps(old_bb) && !leaf.bb.overlaps(particle.bb)) {
+//           leaf.remove(particle);
+//         }
+//         if (node.bb.contains(bb)) {
+//           node.add_to_smallest_container(particle_id, bb);
+//         }
+//         else {
+//           uncontained.push(ParticleBox {id: particle_id, bb: bb});
+//         }
+//       }
+//     }
+//     // apply changes
+//     for node in self.top.nodes_mut() {
+//       node.apply_containees();
+//     }
+//     // from containing node
+//     for node in self.top.nodes() {
+//       for particle in node.iter_particles() {
+//         // determine leaves that overlap particles that didn't before
+//         let old_bb = self.meta[particle_id].old_bb;
+//         for leaf in node.leaves().filter(|leaf| leaf.bb.overlaps(particle.bb) && !leaf.bb.overlaps(old_bb)) {
+//           leaf.add(particle);
+//         }
+//           // if child has too many new particles, split it
+//         // update meta for particle
+//         self.meta[particle_id].old_bb = particle.bb;
+//       }
+//     }
+//     // check leaves
+//     for node in self.top.leaves() {
+//       node.apply_adds();
+//       // if too many new particles and old particles, split it
+//       // else update overlaps with new particles
+//     }
+//     // merge leaves with too few overlaps
+//     for node in self.top.walk_down_mut().filter(|node| match (node.children) { Some(children) => children.borrow()[0].children.is_none(), None => false}) {
+//       // if too particles, join children
+//     }
+//   }
+//
+//   fn remove(self, particle: &Particle) {
+//   }
+//
+//   fn add(self, particle: &Particle) {
+//   }
+// }
 
 #[cfg(test)]
 mod bench {
   extern crate test;
   use std::f64::EPSILON;
-  use std::num::Float;
+  // use std::num::Float;
   use self::test::Bencher;
   use particle::Particle;
   use collision::Collision;
   use math::V2;
-  use std::collections::RingBuf;
+  use std::collections::vec_deque::VecDeque;
   use std::rc::Rc;
   use std::cell::{Ref, RefMut, RefCell};
-  use std::sync::{Arc, Mutex, TaskPool};
+  use std::sync::{Arc, Mutex};
   use std::sync::mpsc::{channel, Sender};
-  use std::thread::Thread;
-  use std::os::num_cpus;
+  use std::thread;
+  extern crate num_cpus;
+  // use self::num_cpus;
+  // use std::os::cpu_count;
   use std::default::Default;
 
   struct VirtualDdvt {
@@ -30,10 +237,10 @@ mod bench {
 
   struct VirtualRingDdvt {
     particles: [Particle; 256],
-    collisions: RingBuf<RingBuf<Collision>>,
+    collisions: VecDeque<VecDeque<Collision>>,
   }
 
-  #[derive(Copy, Show)]
+  #[derive(Copy, Clone, Show)]
   struct FutureParticle {
     position: V2,
     last_position: V2,
@@ -95,7 +302,7 @@ mod bench {
     for d in 0..ddvts.capacity() {
       ddvts.push(VirtualRingDdvt {
         particles: [Particle { .. Default::default() }; 256],
-        collisions: RingBuf::<RingBuf<Collision>>::with_capacity(256),
+        collisions: VecDeque::<VecDeque<Collision>>::with_capacity(256),
       });
       for i in 0..256 {
         ddvts[d].particles[i] = Particle::at(V2 { x: (i as f64) % 16f64, y: (i as f64) / 16f64 });
@@ -307,7 +514,7 @@ mod bench {
     for d in 0..ddvts.len() {
       let mut ddvt = &mut ddvts[d];
       let mut particles = &mut ddvt.particles;
-      for collision in ddvt.collisions.slice(0, ddvt.last_col).iter() {
+      for collision in ddvt.collisions.iter().take(ddvt.last_col) {
         let a_index = collision.a_ddvt_index as usize;
         let b_index = collision.b_ddvt_index as usize;
 
@@ -424,7 +631,7 @@ mod bench {
       }
       ddvt.collisions[col_index] = Collision { .. Default:: default() };
 
-      for col in ddvt.collisions.slice(0, col_index).iter() {
+      for col in ddvt.collisions.iter().take(col_index) {
         let a_index = col.a_ddvt_index as usize;
         let b_index = col.b_ddvt_index as usize;
         let (ap, alp, bp, blp) = col.solve(&particles[a_index], &particles[b_index]);
@@ -448,7 +655,7 @@ mod bench {
     let rx_arc = Arc::new(Mutex::new(rx));
     for _ in 0..(size) {
       let rx_arc = rx_arc.clone();
-      Thread::spawn(move || {
+      thread::spawn(move || {
         let mut collisions = Vec::<Collision>::with_capacity(33000);
         for i in 0..33000 {
           collisions.push(Default::default());
@@ -485,7 +692,7 @@ mod bench {
           // collisions[col_index] = Collision { .. Default:: default() };
           // ddvt.last_col = col_index;
 
-          for collision in collisions.slice(0, col_index).iter() {
+          for collision in collisions.iter().take(col_index) {
             let a_index = collision.a_ddvt_index as usize;
             let b_index = collision.b_ddvt_index as usize;
 
@@ -533,7 +740,7 @@ mod bench {
     let rx_arc = Arc::new(Mutex::new(rx));
     for _ in 0..(size) {
       let rx_arc = rx_arc.clone();
-      Thread::spawn(move || {
+      thread::spawn(move || {
         let mut collisions = Vec::<Collision>::with_capacity(33000);
         for i in 0..33000 {
           collisions.push(Default::default());
@@ -571,7 +778,7 @@ mod bench {
             // collisions[col_index] = Collision { .. Default:: default() };
             // ddvt.last_col = col_index;
 
-            for collision in collisions.slice(0, col_index).iter() {
+            for collision in collisions.iter().take(col_index) {
               let a_index = collision.a_ddvt_index as usize;
               let b_index = collision.b_ddvt_index as usize;
 
@@ -782,7 +989,7 @@ mod bench {
         col_index = 0;
         for j in (i + 1)..256 {
           if col_group_index >= ddvt.collisions.len() {
-            ddvt.collisions.push_back(RingBuf::<Collision>::with_capacity(32));
+            ddvt.collisions.push_back(VecDeque::<Collision>::with_capacity(32));
           }
           if col_index >= ddvt.collisions[col_group_index].len() {
             ddvt.collisions[col_group_index].push_back(Collision { .. Default::default() });
@@ -833,7 +1040,7 @@ mod bench {
       // }
       // ddvt.collisions[col_index] = Collision { .. Default:: default() };
 
-      // for col in ddvt.collisions.slice(0, col_index).iter() {
+      // for col in ddvt.collisions.as_slice(0, col_index).iter() {
       //   let (ap, alp, bp, blp) = col.solve(&particles[col.a_ddvt_index as usize], &particles[col.b_ddvt_index as usize]);
       //   {
       //     let mut_particle = &mut particles[col.a_ddvt_index as usize];
@@ -996,7 +1203,7 @@ mod bench {
     init_virtual_ddvts(&mut ddvts);
     test_virtual_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       test_virtual_ddvts(&mut ddvts)
     })
   }
@@ -1009,7 +1216,7 @@ mod bench {
       test_virtual_ddvts(&mut ddvts) +
       merge_virtual_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_ddvts(&mut ddvts) +
         test_virtual_ddvts(&mut ddvts) +
         merge_virtual_ddvts(&mut ddvts)
@@ -1025,7 +1232,7 @@ mod bench {
       solve_virtual_ddvts(&mut ddvts) +
       merge_virtual_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_ddvts(&mut ddvts) +
         test_virtual_ddvts(&mut ddvts) +
         solve_virtual_ddvts(&mut ddvts) +
@@ -1038,7 +1245,7 @@ mod bench {
     let mut ddvts = Vec::<VirtualDdvt>::with_capacity(32);
     init_virtual_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_ddvts(&mut ddvts) +
         test_solve_virtual_ddvts(&mut ddvts)
     })
@@ -1049,7 +1256,7 @@ mod bench {
     let mut ddvts = Vec::<VirtualRingDdvt>::with_capacity(32);
     init_virtual_ring_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_ring_ddvts(&mut ddvts) +
         test_solve_virtual_ring_ddvts(&mut ddvts)
     })
@@ -1061,7 +1268,7 @@ mod bench {
     init_virtual_future_ddvts(&mut ddvts);
     test_solve_virtual_future_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_future_ddvts(&mut ddvts) +
         test_solve_virtual_future_ddvts(&mut ddvts)
     })
@@ -1073,7 +1280,7 @@ mod bench {
     init_virtual_future_ddvts(&mut ddvts);
     test_solve_virtual_future_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_future_ddvts(&mut ddvts) +
         test_solve_virtual_future_ddvts(&mut ddvts) +
         merge_virtual_future_ddvts(&mut ddvts)
@@ -1086,7 +1293,7 @@ mod bench {
     init_virtual_future_ddvts(&mut ddvts);
     test_solve_virtual_future_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_virtual_future_ddvts(&mut ddvts) +
         test_solve_merge_virtual_future_ddvts(&mut ddvts)
     })
@@ -1094,12 +1301,12 @@ mod bench {
 
   #[bench]
   fn mutex_virtual_ddvt_test_solve(b: &mut Bencher) {
-    let mut pool = new_mutex_virtual_ddvt_test_pool(num_cpus());
+    let mut pool = new_mutex_virtual_ddvt_test_pool(num_cpus::get());
     let mut ddvts = Vec::<Arc<Mutex<VirtualDdvt>>>::with_capacity(32);
     init_mutex_virtual_ddvts(&mut ddvts);
     test_solve_mutex_virtual_ddvts(&mut ddvts, &mut pool);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_mutex_virtual_ddvts(&mut ddvts) +
         test_solve_mutex_virtual_ddvts(&mut ddvts, &mut pool)
     })
@@ -1107,12 +1314,12 @@ mod bench {
 
   #[bench]
   fn mutex_virtual_ddvt_test_solve_merge(b: &mut Bencher) {
-    let mut pool = new_mutex_virtual_ddvt_test_pool(num_cpus());
+    let mut pool = new_mutex_virtual_ddvt_test_pool(num_cpus::get());
     let mut ddvts = Vec::<Arc<Mutex<VirtualDdvt>>>::with_capacity(32);
     init_mutex_virtual_ddvts(&mut ddvts);
     test_solve_mutex_virtual_ddvts(&mut ddvts, &mut pool);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_mutex_virtual_ddvts(&mut ddvts) +
         test_solve_mutex_virtual_ddvts(&mut ddvts, &mut pool) +
         merge_mutex_virtual_ddvts(&mut ddvts)
@@ -1121,12 +1328,12 @@ mod bench {
 
   #[bench]
   fn boxed_virtual_ddvt_test_solve(b: &mut Bencher) {
-    let mut pool = new_boxed_virtual_ddvt_test_pool(num_cpus());
+    let mut pool = new_boxed_virtual_ddvt_test_pool(num_cpus::get());
     let mut ddvts = Vec::<Option<Box<VirtualDdvt>>>::with_capacity(32);
     init_boxed_virtual_ddvts(&mut ddvts);
     test_solve_boxed_virtual_ddvts(&mut ddvts, &mut pool);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_boxed_virtual_ddvts(&mut ddvts) +
         test_solve_boxed_virtual_ddvts(&mut ddvts, &mut pool)
     })
@@ -1134,12 +1341,12 @@ mod bench {
 
   #[bench]
   fn boxed_virtual_ddvt_test_solve_merge(b: &mut Bencher) {
-    let mut pool = new_boxed_virtual_ddvt_test_pool(num_cpus());
+    let mut pool = new_boxed_virtual_ddvt_test_pool(num_cpus::get());
     let mut ddvts = Vec::<Option<Box<VirtualDdvt>>>::with_capacity(32);
     init_boxed_virtual_ddvts(&mut ddvts);
     test_solve_boxed_virtual_ddvts(&mut ddvts, &mut pool);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       reset_boxed_virtual_ddvts(&mut ddvts) +
         test_solve_boxed_virtual_ddvts(&mut ddvts, &mut pool) +
         merge_boxed_virtual_ddvts(&mut ddvts)
@@ -1151,7 +1358,7 @@ mod bench {
     let mut ddvts = Vec::<RefDdvt>::with_capacity(32);
     init_ref_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       test_ref_ddvts(&mut ddvts)
     })
   }
@@ -1161,7 +1368,7 @@ mod bench {
     let mut ddvts = Vec::<RefDdvt>::with_capacity(32);
     init_ref_ddvts(&mut ddvts);
 
-    b.iter(|&mut:| {
+    b.iter(|| {
       test_ref_ddvts(&mut ddvts) +
         solve_ref_ddvts(&mut ddvts)
     })

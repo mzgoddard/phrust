@@ -1,6 +1,6 @@
 use std::ops::*;
 use std::f64::EPSILON;
-use std::num::Float;
+// use std::num::Float;
 use std::default::Default;
 
 #[derive(Clone, Copy, Default, PartialEq, Show)]
@@ -11,7 +11,7 @@ pub struct V2 {
 
 macro_rules! impl_binary_op {
     ($t:ty, $n:ident) => (
-        #[stable]
+        // #[stable]
         impl $t for V2 {
             type Output = V2;
 
@@ -38,7 +38,7 @@ impl_binary_op!{ Rem, rem }
 
 macro_rules! impl_unary_op {
     ($t:ty, $n:ident) => (
-        #[stable]
+        // #[stable]
         impl $t for V2 {
             type Output = V2;
 

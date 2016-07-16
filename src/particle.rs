@@ -32,6 +32,10 @@ impl Particle {
       .. Default::default()
     }
   }
+
+  pub fn bb(self) -> BB {
+    BB::from_circle(self.position, self.radius)
+  }
 }
 
 impl Default for Particle {

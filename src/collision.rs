@@ -1,9 +1,9 @@
 use std::f64::EPSILON;
-use std::num::Float;
+// use std::num::Float;
 use super::particle::Particle;
 use super::math::*;
 
-#[derive(Copy, Default, Show)]
+#[derive(Copy, Clone, Default, Show)]
 pub struct Collision {
   pub a_ddvt_index: u32,
   pub b_ddvt_index: u32,
@@ -87,7 +87,7 @@ mod bench {
     for i in 0..cols.capacity() {
       cols.push(Default::default());
     }
-    b.iter(|&mut:| {
+    b.iter(|| {
       for i in 0..cols.capacity() {
         cols[i].test(&pa, &pb, 0u32, 1u32);
       }
@@ -103,7 +103,7 @@ mod bench {
     for i in 0..cols.capacity() {
       cols.push(Default::default());
     }
-    b.iter(|&mut:| {
+    b.iter(|| {
       for i in 0..cols.capacity() {
         cols[i].test(&pa, &pb, 0, 1);
       }
