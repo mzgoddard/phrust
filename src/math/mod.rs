@@ -1,10 +1,15 @@
-mod v2;
-mod bb;
+#[macro_use]
+pub mod v2;
+#[macro_use]
+pub mod bb;
 mod base5;
 
 pub type V2 = v2::V2;
 pub type BB = bb::BB;
 pub type b5 = base5::b5;
+
+// #[macro_use]
+// pub use bb_macro::*;
 
 // impl V2 {
 //   #[inline]
