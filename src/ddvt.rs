@@ -11,7 +11,7 @@ use super::quad_tree;
 use super::quad_tree::{QuadTree, TreeSplitableWith, TreeJoinableWith, TreeSplitable, TreeJoinable};
 
 const MAX_LEAF_VOLUME : usize = 256;
-const MIN_LEAF_VOLUME : usize = 192;
+const MIN_LEAF_VOLUME : usize = 128;
 
 struct Volume {
   bb: BB,

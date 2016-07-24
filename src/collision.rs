@@ -117,7 +117,7 @@ impl Collision {
     // )
 
     let pqt = ((
-      (a.pressure_radius + b.pressure_radius) / (ingress_sq + EPSILON + (a.pressure_radius + b.pressure_radius) / 4.0).sqrt()
+      (a.pressure_radius + b.pressure_radius) / (ingress_sq + EPSILON).sqrt()
     ) - 1.0f32);
     let ingress = (a.pressure_radius + b.pressure_radius - (ingress_sq + EPSILON).sqrt()) / (a.pressure_radius + b.pressure_radius);
 

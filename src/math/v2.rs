@@ -106,11 +106,12 @@ impl V2 {
     self.x * other.y - self.y * other.x
   }
 
-  // #[inline]
-  // pub fn project(self, other: V2) -> f32 {
-  //   let dot = self.dot(other);
-  //   V2 { x: dot / other.x, y: dot / other.y }
-  // }
+  #[inline]
+  pub fn project(self, other: V2) -> V2 {
+    let dot = self.dot(other);
+    let other_mag2 = other.mag2();
+    V2 { x: other.x * dot / other_mag2, y: other.y * dot / other_mag2 }
+  }
 
   #[inline]
   pub fn mag2(self: V2) -> f32 {
@@ -140,7 +141,7 @@ impl V2 {
 
   #[inline]
   pub fn unit(self: V2) -> V2 {
-    self.scale(1f32 / self.mag())
+    self.div_scale(self.mag())
   }
 }
 

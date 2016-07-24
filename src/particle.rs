@@ -57,7 +57,7 @@ impl Particle {
       self.position.scale(POS_MUL) - self.last_position.scale(LAST_POS_MUL)
     ) + self.acceleration.scale(dt * dt);
     self.last_position = position;
-    self.acceleration = V2::zero();
+    // self.acceleration = V2::zero();
     self.bbox = self.bb();
   }
 }
