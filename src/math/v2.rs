@@ -10,6 +10,7 @@ pub struct V2 {
   pub y: f32
 }
 
+#[macro_export]
 macro_rules! v2 {
   ($x:expr, $y:expr) => { {
     V2 {x: $x as f32, y: $y as f32}
@@ -83,6 +84,11 @@ impl V2 {
   }
 
   #[inline]
+  pub fn scale_add(self: V2, scale: f32, add: V2) -> V2 {
+    V2 { x: self.x.mul_add(scale, add.x), y: self.y.mul_add(scale, add.y) }
+  }
+
+  #[inline]
   pub fn sq(self: V2) -> V2 {
     V2 { x: self.x * self.x, y: self.y * self.y }
   }
@@ -108,9 +114,12 @@ impl V2 {
 
   #[inline]
   pub fn project(self, other: V2) -> V2 {
-    let dot = self.dot(other);
-    let other_mag2 = other.mag2();
-    V2 { x: other.x * dot / other_mag2, y: other.y * dot / other_mag2 }
+    other.scale(self.dot(other) / other.mag2())
+  }
+
+  #[inline]
+  pub fn project_scale_add(self, other: V2, scale: f32, add: V2) -> V2 {
+    other.scale_add(self.dot(other) / other.mag2() * scale, add)
   }
 
   #[inline]
@@ -123,7 +132,9 @@ impl V2 {
 
   #[inline]
   pub fn mag(self: V2) -> f32 {
-    self.mag2().sqrt()
+    self.x.hypot(self.y)
+    // (self.x * self.x + self.y * self.y).sqrt()
+    // self.mag2().sqrt()
   }
 
   #[inline]
@@ -136,7 +147,8 @@ impl V2 {
 
   #[inline]
   pub fn dist(self, other: V2) -> f32 {
-    self.dist2(other).sqrt()
+    (self.x - other.x).hypot(self.y - other.y)
+    // self.dist2(other).sqrt()
   }
 
   #[inline]

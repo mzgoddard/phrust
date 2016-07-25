@@ -12,6 +12,7 @@ pub struct BB {
   pub t: f32,
 }
 
+#[macro_export]
 macro_rules! bb {
   ($l:expr, $b:expr, $r:expr, $t:expr) => { {
     BB {

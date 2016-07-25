@@ -72,7 +72,7 @@ impl VirtualVolume {
 }
 
 impl QuadTree<VirtualVolume> {
-  pub fn walk_bb_mut(&mut self, b: BB, handle: &Fn(&mut VirtualVolume)) {
+  fn walk_bb_mut(&mut self, b: BB, handle: &Fn(&mut VirtualVolume)) {
     if let Some(ref mut children) = self.children {
       let cx = (self.value.bb.l + self.value.bb.r) / 2f32;
       let cy = (self.value.bb.b + self.value.bb.t) / 2f32;
@@ -98,7 +98,7 @@ impl QuadTree<VirtualVolume> {
     }
   }
 
-  pub fn walk_contain_bb_search_mut(&mut self, b: BB, handle: &Fn(&mut QuadTree<VirtualVolume>) -> bool) -> bool {
+  fn walk_contain_bb_search_mut(&mut self, b: BB, handle: &Fn(&mut QuadTree<VirtualVolume>) -> bool) -> bool {
     if handle(self) {
       return true;
     }
@@ -640,6 +640,7 @@ impl VolumeRoot {
   > {
     fn into_volume(vvolume: &QuadTree<VirtualVolume>) -> Option<(&Vec<usize>, &Vec<usize>)> {
       if vvolume.is_leaf() {
+        // println!("{}", vvolume.value.bb);
         // let mut ids = Vec::<usize>::new();
         // ids.extend(&vvolume.value.contained);
         // ids.extend(&vvolume.value.uncontained);

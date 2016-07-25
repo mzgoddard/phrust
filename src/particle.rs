@@ -33,7 +33,7 @@ pub struct Particle {
   // pub old_ddvt_position: V2,
 }
 
-const LAST_POS_MUL : f32 = 0.99;
+const LAST_POS_MUL : f32 = -0.99;
 const POS_MUL : f32 = 1.99;
 
 impl Particle {
@@ -46,16 +46,21 @@ impl Particle {
   }
 
   pub fn bb(&self) -> BB {
-    // BB::from_circle(self.position, self.radius)
-    BB::from_circle(self.position, self.pressure_radius)
+    BB::from_circle(self.position, self.radius)
+    // BB::from_circle(self.position, self.pressure_radius)
   }
 
-  pub fn integrate(&mut self, dt: f32) {
+  pub fn integrate(&mut self, dt2: f32) {
     // let lastpos = self.last_position * LAST_POS_MUL;
     let position = self.position;
-    self.position = (
-      self.position.scale(POS_MUL) - self.last_position.scale(LAST_POS_MUL)
-    ) + self.acceleration.scale(dt * dt);
+    self.position =
+      self.position.scale_add(
+        POS_MUL,
+        self.last_position.scale_add(
+          LAST_POS_MUL,
+          self.acceleration.scale(dt2)
+        )
+      );
     self.last_position = position;
     // self.acceleration = V2::zero();
     self.bbox = self.bb();

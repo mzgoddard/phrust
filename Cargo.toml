@@ -2,6 +2,10 @@
 name = "phrust"
 version = "0.0.0"
 
+[lib]
+name = "phrust"
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 num_cpus = "0.2.6"
 glfw = "*"

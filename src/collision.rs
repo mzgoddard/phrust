@@ -97,14 +97,14 @@ impl Collision {
 
   #[inline]
   pub fn test2(a: &Particle, b: &Particle) -> bool {
-    // (a.radius + b.radius) * (a.radius + b.radius) > a.position.dist2(b.position)
-    (a.pressure_radius + b.pressure_radius) * (a.pressure_radius + b.pressure_radius) > a.position.dist2(b.position)
+    (a.radius + b.radius) * (a.radius + b.radius) > a.position.dist2(b.position)
+    // (a.pressure_radius + b.pressure_radius) * (a.pressure_radius + b.pressure_radius) > a.position.dist2(b.position)
   }
 
   #[inline]
   pub fn solve2(a: &Particle, b: &Particle) -> (V2, V2, f32, f32) {
     let diff = a.position - b.position;
-    let ingress_sq = diff.mag2();
+    // let ingress_sq = diff.mag2();
     // let pqt = ((
     //   (a.radius + b.radius) /
     //   (ingress_sq + EPSILON + (a.radius + b.radius) / 4.0).sqrt()
@@ -116,17 +116,28 @@ impl Collision {
     //   ingress_sq
     // )
 
-    let pqt = ((
-      (a.pressure_radius + b.pressure_radius) / (ingress_sq + EPSILON).sqrt()
-    ) - 1.0f32);
-    let ingress = (a.pressure_radius + b.pressure_radius - (ingress_sq + EPSILON).sqrt()) / (a.pressure_radius + b.pressure_radius);
+    let ingress_ep = diff.mag();
+    let pqt = ((a.radius + b.radius) / (ingress_ep + EPSILON)) - 1.0f32;
+    let ingress = (a.radius + b.radius - ingress_ep) / (a.radius + b.radius);
 
     (
-      diff.scale(b.pressure_mass / (a.pressure_mass + b.pressure_mass) * pqt),
-      diff.scale(-a.pressure_mass / (a.pressure_mass + b.pressure_mass) * pqt),
-      ingress * b.pressure_mass / (a.pressure_mass + b.pressure_mass),
-      ingress * a.pressure_mass / (a.pressure_mass + b.pressure_mass)
+      diff.scale(b.mass / (a.mass + b.mass) * pqt),
+      diff.scale(-a.mass / (a.mass + b.mass) * pqt),
+      ingress * b.mass / (a.mass + b.mass),
+      ingress * a.mass / (a.mass + b.mass)
     )
+
+    // let pqt = ((
+    //   (a.pressure_radius + b.pressure_radius) / (ingress_sq + EPSILON).sqrt()
+    // ) - 1.0f32);
+    // let ingress = (a.pressure_radius + b.pressure_radius - (ingress_sq + EPSILON).sqrt()) / (a.pressure_radius + b.pressure_radius);
+    //
+    // (
+    //   diff.scale(b.pressure_mass / (a.pressure_mass + b.pressure_mass) * pqt),
+    //   diff.scale(-a.pressure_mass / (a.pressure_mass + b.pressure_mass) * pqt),
+    //   ingress * b.pressure_mass / (a.pressure_mass + b.pressure_mass),
+    //   ingress * a.pressure_mass / (a.pressure_mass + b.pressure_mass)
+    // )
   }
 
   #[inline]
@@ -213,13 +224,13 @@ mod test {
 
   #[test]
   fn fn_test() {
-    let mut c: Collision = Default::default();
+    // let mut c: Collision = Default::default();
     let a = Particle::at(Default::default());
     let b = Particle::at(V2 { x: 0.5f32, y: 0f32 });
-    assert!(c.test(&a, &b, 0u32, 1u32));
-    assert_eq!(c.a_ddvt_index, 0u32);
-    assert_eq!(c.b_ddvt_index, 1u32);
-    assert_eq!(c.ingress, 0.25f32);
+    assert!(Collision::test2(&a, &b));
+    // assert_eq!(c.a_ddvt_index, 0u32);
+    // assert_eq!(c.b_ddvt_index, 1u32);
+    // assert_eq!(c.ingress, 0.25f32);
     // assert!(c.a.is_some());
     // assert!(c.b.is_some());
     // let c = Collision::test(&a, &b);
