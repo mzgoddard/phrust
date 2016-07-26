@@ -201,11 +201,18 @@ impl WorldRenderer {
       let red = color!(b"\xff\x00\x00\x88");
       let yellow = color!(b"\xff\xff\x00\x88");
       let orange = color!(b"\xff\x88\x00\x88");
+      let white = color!(b"\xff\xff\xff\x88");
       for (i, particle) in world.iter_particles().enumerate() {
         num_particles = (i + 1) as isize;
-        let c = if particle.uncontained {
+        let c = if particle.is_trigger() {
+          white
+        }
+        else if particle.uncontained {
+          // red
           if i % 100 == 0 {orange} else {red}
-        } else {
+        }
+        else {
+          // blue
           if i % 100 == 0 {yellow} else {blue}
         };
         data.push(particle.bbox.into_particle(c));

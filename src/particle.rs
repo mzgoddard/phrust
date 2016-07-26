@@ -7,6 +7,12 @@ pub enum State {
   Asleep,
   Trigger,
   Static,
+  Dead,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct ParticleId {
+  id: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -28,6 +34,16 @@ pub struct Particle {
 
 const LAST_POS_MUL : f32 = -0.99;
 const POS_MUL : f32 = 1.99;
+
+// impl Deref for ParticleId {
+//
+// }
+//
+// impl Borrow<ParticleId> for Particle {
+//   fn borrow(&self) -> &ParticleId {
+//
+//   }
+// }
 
 impl Particle {
   pub fn at(p: V2) -> Particle {
@@ -58,6 +74,27 @@ impl Particle {
     self.last_position = position;
     // self.acceleration = V2::zero();
     // self.bbox = self.bb();
+  }
+
+  pub fn is_dynamic(&self) -> bool {
+    match self.state {
+      State::Dynamic => true,
+      _ => false,
+    }
+  }
+
+  pub fn is_trigger(&self) -> bool {
+    match self.state {
+      State::Trigger => true,
+      _ => false,
+    }
+  }
+
+  pub fn is_dead(&self) -> bool {
+    match self.state {
+      State::Dead => true,
+      _ => false,
+    }
   }
 }
 
