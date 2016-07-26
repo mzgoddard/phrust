@@ -20,8 +20,8 @@ use super::ddvt::VolumeRoot;
 struct Positions {
   solutions: f32,
   ingress: f32,
-  last_position: V2,
   position: V2,
+  last_position: V2,
 }
 
 #[derive(Default)]
@@ -55,39 +55,45 @@ struct WorldPool {
   threads: usize,
   jobs: Vec<Box<ParticleJob>>,
   positions: Vec<Vec<Positions>>,
-  job_tx: Sender<WorldJob>,
+  // job_tx: Sender<WorldJob>,
+  next_thread: usize,
+  job_txs: Vec<Sender<WorldJob>>,
   particles_rx: Receiver<Box<ParticleJob>>,
   positions_rx: Receiver<Vec<Positions>>,
   positions_rx_tx: Sender<Vec<Positions>>,
 }
 
 impl Positions {
+  #[inline]
   fn add(&mut self, p: V2, i: f32) {
-    self.solutions += 1.0;
-    self.ingress += i;
-    // self.last_position = self.last_position + lp;
+    self.solutions = self.solutions + 1.0;
+    self.ingress = self.ingress + i;
     self.position = self.position + p;
-  }
-
-  fn add_half(&mut self, p: V2, i: f32) {
-    self.solutions += 0.5;
-    self.ingress += i / 2.0;
     // self.last_position = self.last_position + lp;
+  }
+
+  #[inline]
+  fn add_half(&mut self, p: V2, i: f32) {
+    self.solutions = self.solutions + 0.5;
+    self.ingress = self.ingress + i / 2.0;
     self.position = self.position + p.div_scale(2.0);
+    // self.last_position = self.last_position + lp;
   }
 
+  #[inline]
   fn merge(&mut self, other: &Positions) {
-    self.solutions += other.solutions;
-    self.ingress += other.ingress;
-    // self.last_position = self.last_position + other.last_position;
+    self.solutions = self.solutions + other.solutions;
+    self.ingress = self.ingress + other.ingress;
     self.position = self.position + other.position;
+    // self.last_position = self.last_position + other.last_position;
   }
 
+  #[inline]
   fn clear(&mut self) {
     self.solutions = 0.0;
     self.ingress = 0f32;
-    // self.last_position = V2::zero();
     self.position = V2::zero();
+    // self.last_position = V2::zero();
   }
 }
 
@@ -194,59 +200,58 @@ impl World {
       // println!("iter solutions");
       self.apply_solutions();
     }
-
-    // for particle in self.particles.iter_mut() {
-    //   let bb = particle.bbox;
-    //   if bb.l < self.bb.l {
-    //     particle.position.x += self.bb.l - bb.l;
-    //   }
-    //   if bb.b < self.bb.b {
-    //     particle.position.y += self.bb.b - bb.b;
-    //   }
-    //   if bb.r > self.bb.r {
-    //     particle.position.x += self.bb.r - bb.r;
-    //   }
-    //   if bb.t > self.bb.t {
-    //     particle.position.y += self.bb.t - bb.t;
-    //   }
-    // }
   }
 
   fn integrate_particles(&mut self) {
+    let gravity = self.gravity;
+    let self_bb = self.bb;
     for particle in self.particles.iter_mut() {
-      particle.acceleration = particle.acceleration + self.gravity;
+      particle.acceleration = particle.acceleration + gravity;
       particle.integrate(self.dt2);
       // println!("{} {}", particle.id, particle.bbox);
 
-      let bb = particle.bbox;
-      if bb.l < self.bb.l {
-        particle.position.x += self.bb.l - bb.l;
-        particle.last_position.x -= self.bb.l - bb.l;
-        particle.bbox.l += self.bb.l - bb.l;
-        particle.bbox.r += self.bb.l - bb.l;
-      }
-      else if bb.r > self.bb.r {
-        particle.position.x += self.bb.r - bb.r;
-        particle.last_position.x -= self.bb.r - bb.r;
-        particle.bbox.l += self.bb.r - bb.r;
-        particle.bbox.r += self.bb.r - bb.r;
-      }
-      if bb.b < self.bb.b {
-        particle.position.y += self.bb.b - bb.b;
-        particle.last_position.y -= self.bb.b - bb.b;
-        particle.bbox.b += self.bb.b - bb.b;
-        particle.bbox.t += self.bb.b - bb.b;
-      }
-      else if bb.t > self.bb.t {
-        particle.position.y += self.bb.t - bb.t;
-        particle.last_position.y -= self.bb.t - bb.t;
-        particle.bbox.b += self.bb.t - bb.t;
-        particle.bbox.t += self.bb.t - bb.t;
-      }
-      // particle.velocity = (particle.last_position - particle.position).scale(0.9999);
-      // particle.position_double = particle.position.scale(2.0);
-      // particle.position_pre_calc = particle.radius2 - particle.position.x.powi(2) - particle.position.y.powi(2);
-      // particle.bbox = particle.bb();
+      // let bb = particle.bbox;
+      let constrain_x =
+        (self_bb.l - (particle.position.x - particle.radius)).max(0.0) +
+        (self_bb.r - (particle.position.x + particle.radius)).min(0.0);
+      let constrain_y =
+        (self_bb.b - (particle.position.y - particle.radius)).max(0.0) +
+        (self_bb.t - (particle.position.y + particle.radius)).min(0.0);
+      particle.bbox = BB {
+        l: particle.position.x + constrain_x - particle.radius,
+        b: particle.position.y + constrain_y - particle.radius,
+        r: particle.position.x + constrain_x + particle.radius,
+        t: particle.position.y + constrain_y + particle.radius,
+      };
+      particle.position.x = particle.position.x + constrain_x;
+      particle.position.y = particle.position.y + constrain_y;
+      particle.last_position.x = particle.last_position.x - constrain_x;
+      particle.last_position.y = particle.last_position.y - constrain_y;
+
+      // if bb.l < self.bb.l {
+      //   particle.position.x += self.bb.l - bb.l;
+      //   particle.last_position.x -= self.bb.l - bb.l;
+      //   particle.bbox.l += self.bb.l - bb.l;
+      //   particle.bbox.r += self.bb.l - bb.l;
+      // }
+      // else if bb.r > self.bb.r {
+      //   particle.position.x += self.bb.r - bb.r;
+      //   particle.last_position.x -= self.bb.r - bb.r;
+      //   particle.bbox.l += self.bb.r - bb.r;
+      //   particle.bbox.r += self.bb.r - bb.r;
+      // }
+      // if bb.b < self.bb.b {
+      //   particle.position.y += self.bb.b - bb.b;
+      //   particle.last_position.y -= self.bb.b - bb.b;
+      //   particle.bbox.b += self.bb.b - bb.b;
+      //   particle.bbox.t += self.bb.b - bb.b;
+      // }
+      // else if bb.t > self.bb.t {
+      //   particle.position.y += self.bb.t - bb.t;
+      //   particle.last_position.y -= self.bb.t - bb.t;
+      //   particle.bbox.b += self.bb.t - bb.t;
+      //   particle.bbox.t += self.bb.t - bb.t;
+      // }
     }
   }
 
@@ -258,7 +263,7 @@ impl World {
     //   particles[i] = self.particles[id];
     // }
     let s = self.particles.as_ptr();
-    let p = particles.as_mut_ptr();
+    let mut p = particles.as_mut_ptr();
     let c = contained.as_ptr();
     let cl = contained.len();
     let u = uncontained.as_ptr();
@@ -270,77 +275,14 @@ impl World {
       i += 1;
     }
     i = 0;
+    p = unsafe { p.offset(cl as isize) };
     while i < ul {
-      unsafe { *p.offset((i + cl) as isize) = *s.offset(*u.offset(i as isize) as isize); }
+      unsafe { *p.offset(i as isize) = *s.offset(*u.offset(i as isize) as isize); }
       // particles[i + cl] = self.particles[unsafe { *u.offset(i as isize) }];
       i += 1;
     }
     *particles_len = cl + ul;
   }
-
-  // fn test_particles(&self, particles: &[Particle], particles_len: usize, collisions: &mut [Collision], collision_index: &mut usize) {
-  //   let mut i = 0;
-  //   let mut j = 0;
-  //   let mut p = particles.as_ptr();
-  //   let mut c = collisions.as_mut_ptr();
-  //   // let mut collision = unsafe { &mut *(&mut collisions[*collision_index] as *mut Collision) as &mut Collision };
-  //   while i < particles_len {
-  //     // let a = &particles[i];
-  //     let a = unsafe { &*p.offset(i as isize) };
-  //     j = i + 1;
-  //     while j < particles_len {
-  //       // if collision_index <= collisions.len() {
-  //       //   collisions.push(Default::default());
-  //       // }
-  //       if let Some(collision) = Collision::test(
-  //         a,
-  //         // particles[j],
-  //         unsafe { &*p.offset(j as isize) },
-  //         i, j
-  //       ) {
-  //         unsafe { ptr::write(c.offset(*collision_index as isize), collision) };
-  //         // collisions[*collision_index] = collision;
-  //         *collision_index += 1;
-  //         // collision = unsafe { &mut *(&mut collisions[*collision_index] as *mut Collision) as &mut Collision };
-  //       }
-  //       j += 1;
-  //     }
-  //     i += 1;
-  //   }
-  //   // for i in 0..particles_len {
-  //   //   for j in (i + 1)..particles_len {
-  //   //     if collisions[collision_index].test(&particles[i], &particles[j], i as u32, j as u32) {
-  //   //       collision_index += 1;
-  //   //     }
-  //   //   }
-  //   // }
-  //   // let iter_a = particles.iter().take(particles_len).enumerate();
-  //   // let mut iter_ = iter_a.clone();
-  //   // for (i, a) in iter_a {
-  //   //   iter_.next();
-  //   //   for (j, b) in iter_.clone() {
-  //   //     if collisions[*collision_index].test(a, b, i as u32, j as u32) {
-  //   //       *collision_index += 1;
-  //   //     }
-  //   //   }
-  //   // }
-  // }
-  //
-  // fn solve_collisions(&mut self, particles: &[Particle], collisions: &[Collision], collision_index: usize) {
-  //   let p = particles.as_ptr();
-  //   let s = self.solve_positions.as_mut_ptr();
-  //   for (i, collision) in collisions.iter().take(collision_index).enumerate() {
-  //     let a = unsafe { &*p.offset(collision.a_ddvt_index as isize) };
-  //     let b = unsafe { &*p.offset(collision.b_ddvt_index as isize) };
-  //     // let a = &particles[collision.a_ddvt_index];
-  //     // let b = &particles[collision.b_ddvt_index];
-  //     let (ap, alp, bp, blp) = collision.solve(a, b);
-  //     (unsafe { &mut *s.offset(a.id as isize) }).add(alp, ap, collision.ingress);
-  //     (unsafe { &mut *s.offset(b.id as isize) }).add(blp, bp, collision.ingress);
-  //     // self.solve_positions[a.id].add(alp, ap, collision.ingress);
-  //     // self.solve_positions[b.id].add(blp, bp, collision.ingress);
-  //   }
-  // }
 
   fn test_solve_particles(particles: &[Particle], particles_len: usize, contained_len: usize, positions: &mut [Positions], scratch: &mut [Positions]) {
     let mut i = 0;
@@ -405,10 +347,6 @@ impl World {
         let particle = unsafe { &mut *p.offset(i as isize) };
         let solutions = positions.solutions;
         let inv_solutions = 1.0 / positions.solutions;
-        // particle.last_position = (
-        //   positions.last_position +
-        //   (particle.last_position - particle.position).scale(positions.solutions as f32)
-        // ).div_scale(positions.solutions as f32);
         if positions.ingress > 0.25 &&
           particle.acceleration.dot(positions.position) < 0.0 {
           particle.last_position =
@@ -442,39 +380,7 @@ impl World {
         particle.position =
           positions.position.scale_add(inv_solutions, particle.position);
         particle.acceleration = V2::zero();
-        // let pressure = particle.pressure;
-        // let radius = particle.radius;
-        // let new_pressure_diff = (1f32 + (positions.ingress * radius).log(
-        //   (radius)
-        // ) - pressure);
-        // let new_pressure_diff = 1.0 - pressure + radius / (radius - positions.ingress);
-        // particle.pressure = f32::max(
-        //   1f32,
-        //   f32::min(
-        //     1f32,
-        //     (if new_pressure_diff > 0.0 {pressure + 4f32} else {pressure}) * 0.125
-        //     // pressure + if new_pressure_diff > 0.0 {0.0001} else {-0.00001}
-        //     // new_pressure_diff / if new_pressure_diff > 0.0 {10f32} else {1100f32} + pressure,
-        //   )
-        // );
-        // particle.pressure_radius = particle.pressure * particle.radius;
-        // particle.pressure_radius2 = particle.pressure * particle.pressure * particle.radius2;
-        // particle.pressure_mass = particle.pressure * particle.mass * particle.pressure;
-        // particle.pressure_radius = particle.radius;
-        // particle.pressure_radius2 = particle.radius2;
-        // particle.pressure_mass = particle.mass;
         positions.clear();
-      }
-      else {
-        // let pressure = self.particles[i].pressure;
-        // self.particles[i].pressure = f32::max(1.0, pressure * (1.0 - 1.0 / 1100.0));
-        // let particle = &mut self.particles[i];
-        // particle.pressure_radius = particle.pressure * particle.radius;
-        // particle.pressure_radius2 = particle.pressure * particle.pressure * particle.radius2;
-        // particle.pressure_mass = particle.pressure * particle.mass *particle.pressure;
-        // particle.pressure_radius = particle.radius;
-        // particle.pressure_radius2 = particle.radius2;
-        // particle.pressure_mass = particle.mass;
       }
       i += 1;
     }
@@ -494,8 +400,9 @@ impl Default for ParticleJob {
 
 impl WorldPool {
   fn new() -> WorldPool {
-    let (job_tx, job_rx) = channel();
-    let job_rx_mutex = Arc::new(Mutex::new(job_rx));
+    // let (job_tx, job_rx) = channel();
+    // let job_rx_mutex = Arc::new(Mutex::new(job_rx));
+    let mut job_txs = Vec::<Sender<WorldJob>>::new();
     let (particles_tx, particles_rx) = channel();
     let (positions_tx, positions_rx) = channel();
     let (positions_rx_tx, positions_tx_rx) = channel();
@@ -505,7 +412,9 @@ impl WorldPool {
     println!("WorldPool using {} threads.", threads);
 
     for i in 0..threads {
-      let job_rx_mutex = job_rx_mutex.clone();
+      let (job_tx, job_rx) = channel();
+      job_txs.push(job_tx);
+      // let job_rx_mutex = job_rx_mutex.clone();
       let particles_tx = particles_tx.clone();
       let positions_tx = positions_tx.clone();
       let positions_tx_rx_mutex = positions_tx_rx_mutex.clone();
@@ -513,9 +422,10 @@ impl WorldPool {
         let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
         let mut scratch = [Positions { .. Default::default() }; 256];
         loop {
-          let job = {
-            job_rx_mutex.lock().unwrap().recv().unwrap()
-          };
+          // let job = {
+          //   job_rx_mutex.lock().unwrap().recv().unwrap()
+          // };
+          let job  = job_rx.recv().unwrap();
           match job {
             WorldJob::Particles(particles) => {
               // println!("rx particles job");
@@ -541,7 +451,9 @@ impl WorldPool {
       threads: threads,
       jobs: Vec::<Box<ParticleJob>>::new(),
       positions: Vec::<Vec<Positions>>::new(),
-      job_tx: job_tx,
+      // job_tx: job_tx,
+      next_thread: 0,
+      job_txs: job_txs,
       particles_rx: particles_rx,
       positions_rx: positions_rx,
       positions_rx_tx: positions_rx_tx,
@@ -561,12 +473,17 @@ impl WorldPool {
   }
 
   fn send(&mut self, job: Box<ParticleJob>) {
-    self.job_tx.send(WorldJob::Particles(job));
+    let job_tx = &mut self.job_txs[self.next_thread];
+    job_tx.send(WorldJob::Particles(job));
+    self.next_thread = self.next_thread + 1;
+    if self.next_thread >= self.threads {
+      self.next_thread = 0;
+    }
   }
 
   fn solutions(&mut self, handle: &mut FnMut(&mut Vec<Positions>)) {
     for i in 0..self.threads {
-      self.job_tx.send(WorldJob::ShowAnswers);
+      self.job_txs[i].send(WorldJob::ShowAnswers);
     }
     for i in 0..self.threads {
       let mut solutions = self.positions_rx.recv().unwrap();

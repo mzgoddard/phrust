@@ -72,6 +72,34 @@ impl VirtualVolume {
 }
 
 impl QuadTree<VirtualVolume> {
+  fn walk_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
+    self._walk_mut(&mut handle);
+  }
+
+  fn _walk_mut<F>(&mut self, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
+    if let Some(ref mut children) = self.children {
+      children[0]._walk_mut(handle);
+      children[1]._walk_mut(handle);
+      children[2]._walk_mut(handle);
+      children[3]._walk_mut(handle);
+    }
+    handle(self);
+  }
+
+  fn walk_rev_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
+    self._walk_rev_mut(&mut handle);
+  }
+
+  fn _walk_rev_mut<F>(&mut self, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
+    handle(self);
+    if let Some(ref mut children) = self.children {
+      children[0]._walk_rev_mut(handle);
+      children[1]._walk_rev_mut(handle);
+      children[2]._walk_rev_mut(handle);
+      children[3]._walk_rev_mut(handle);
+    }
+  }
+
   fn walk_bb_mut(&mut self, b: BB, handle: &Fn(&mut VirtualVolume)) {
     if let Some(ref mut children) = self.children {
       let cx = (self.value.bb.l + self.value.bb.r) / 2f32;
@@ -98,39 +126,81 @@ impl QuadTree<VirtualVolume> {
     }
   }
 
-  fn walk_contain_bb_search_mut(&mut self, b: BB, handle: &Fn(&mut QuadTree<VirtualVolume>) -> bool) -> bool {
-    if handle(self) {
-      return true;
-    }
-    if let Some(ref mut children) = self.children {
+  fn walk_contain_bb_search_mut(&mut self, b: BB, handle: &Fn(&mut QuadTree<VirtualVolume>)) {
+    let found = if let Some(ref mut children) = self.children {
       let cx = (self.value.bb.l + self.value.bb.r) / 2f32;
       let cy = (self.value.bb.b + self.value.bb.t) / 2f32;
       if cy <= b.b {
         if cx >= b.r {
-          if children[0].walk_contain_bb_search_mut(b, handle) {
-            return true;
-          }
+          children[0].walk_contain_bb_search_mut(b, handle);
+          false
         }
-        if cx <= b.l {
-          if children[1].walk_contain_bb_search_mut(b, handle) {
-            return true;
-          }
+        else if cx <= b.l {
+          children[1].walk_contain_bb_search_mut(b, handle);
+          false
+        }
+        else {
+          true
         }
       }
-      if cy >= b.t {
+      else if cy >= b.t {
         if cx >= b.r {
-          if children[2].walk_contain_bb_search_mut(b, handle) {
-            return true;
-          }
+          children[2].walk_contain_bb_search_mut(b, handle);
+          false
         }
-        if cx <= b.l {
-          if children[3].walk_contain_bb_search_mut(b, handle) {
-            return true;
-          }
+        else if cx <= b.l {
+          children[3].walk_contain_bb_search_mut(b, handle);
+          false
         }
+        else {
+          true
+        }
+      }
+      else {
+        true
       }
     }
-    false
+    else {
+      true
+    };
+    if found {
+      handle(self);
+    }
+  }
+
+  fn walk_with_record_stack_rev_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, record_stack: &mut Vec<&mut VirtualRecord>, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut Vec<&mut VirtualRecord>) {
+    let l = record_stack.len();
+    record_stack.push(unsafe { &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord });
+    // unsafe {
+    //   if l == record_stack.capacity() {
+    //     record_stack.reserve(l * 2);
+    //   }
+    //   record_stack.set_len(l + 1);
+    //   *(*record_stack).as_mut_ptr().offset(l as isize) = &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord;
+    // }
+    handle(self, record_stack);
+    if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut self.children, &mut record.children) {
+      volume_children[0].walk_with_record_stack_rev_mut(&mut record_children[0], record_stack, handle);
+      volume_children[1].walk_with_record_stack_rev_mut(&mut record_children[1], record_stack, handle);
+      volume_children[2].walk_with_record_stack_rev_mut(&mut record_children[2], record_stack, handle);
+      volume_children[3].walk_with_record_stack_rev_mut(&mut record_children[3], record_stack, handle);
+    }
+    unsafe {
+      record_stack.set_len(l);
+    }
+    // record_stack.pop();
+  }
+
+  fn walk_with_record_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {
+    if let Some(ref mut volume_children) = self.children {
+      if let Some(ref mut record_children) = record.children {
+        volume_children[0].walk_with_record_mut(&mut record_children[0], handle);
+        volume_children[1].walk_with_record_mut(&mut record_children[1], handle);
+        volume_children[2].walk_with_record_mut(&mut record_children[2], handle);
+        volume_children[3].walk_with_record_mut(&mut record_children[3], handle);
+      }
+    }
+    handle(self, record);
   }
 }
 
@@ -323,9 +393,17 @@ impl VolumeRoot {
     while self.bb_clone.len() > particles.len() {
       self.bb_clone.pop();
     }
-    for (i, particle) in particles.iter().enumerate() {
-      self.bb_clone[i].new = particle.bbox;
+    let b = self.bb_clone.as_mut_ptr();
+    let p = particles.as_ptr();
+    let mut i = 0;
+    let l = particles.len();
+    while i < l {
+      unsafe { (&mut *b.offset(i as isize)).new = (&*p.offset(i as isize)).bbox; }
+      i += 1;
     }
+    // for (i, particle) in particles.iter().enumerate() {
+    //   self.bb_clone[i].new = particle.bbox;
+    // }
 
     self.update_apply_changes(particles);
     self.update_remove_out_of_date_contained(particles);
@@ -333,9 +411,17 @@ impl VolumeRoot {
     self.update_leaves_uncontained(particles);
     self.update_split_and_join(particles);
 
-    for old_new in self.bb_clone.iter_mut() {
-      old_new.old = old_new.new;
+    i = 0;
+    while i < l {
+      unsafe {
+        let bsub = &mut *b.offset(i as isize);
+        bsub.old = bsub.new;
+      }
+      i += 1;
     }
+    // for old_new in self.bb_clone.iter_mut() {
+    //   old_new.old = old_new.new;
+    // }
   }
 
   fn update_apply_changes(&mut self, particles: &mut Vec<Particle>) {
@@ -409,8 +495,9 @@ impl VolumeRoot {
     let mut removed = Vec::<usize>::new();
     let mut deeper = Vec::<usize>::new();
     let mut bb_clones = unsafe { &mut *(&mut self.bb_clone as *mut Vec<OldNew>) as &mut Vec<OldNew> };
-    for (vvolume, recordset) in self.root.iter_mut().rev()
-    .zip(self.records.iter_stack_mut().rev()) {
+    self.walk_with_record_stack_rev_mut(|vvolume, recordset| {
+    // for (vvolume, recordset) in self.root.iter_mut().rev()
+    // .zip(self.records.iter_stack_mut().rev()) {
       let bb = vvolume.value.bb;
       let branch = vvolume.children.is_some();
       vvolume.value.contained.retain(|&particleid| {
@@ -482,11 +569,13 @@ impl VolumeRoot {
         }
         deeper.clear();
       }
-    }
+    // }
+    });
   }
 
   fn update_add_newly_contained(&mut self, particles: &mut Vec<Particle>) {
-    for (records, vvolume) in self.records.iter().zip(self.root.iter_mut()) {
+    self.walk_with_record_mut(|vvolume, records| {
+    // for (records, vvolume) in self.records.iter().zip(self.root.iter_mut()) {
       for particleid in records.value.contained.iter() {
         // let particle = &mut particles[*particleid];
         let evil = particles.as_mut_ptr();
@@ -494,24 +583,27 @@ impl VolumeRoot {
         let mut uncontained = false;
         vvolume.walk_contain_bb_search_mut(new_bb, &|vvolumebelow| {
         // for vvolumebelow in vvolume.iter_mut().rev().filter(|vvolume| vvolume.value.contains(particle)) {
-          match vvolumebelow.children {
-            Some(_) => {
-              if !vvolumebelow.value.bb.child_contains(&new_bb) {
-                vvolumebelow.value.contained.push(*particleid);
-                unsafe { &mut *evil.offset(*particleid as isize) }.uncontained = true;
-                // unsafe { uncontained = true; }
-                true
-              }
-              else {
-                false
-              }
-            },
-            None => {
-              vvolumebelow.value.contained.push(*particleid);
-              unsafe { &mut *evil.offset(*particleid as isize) }.uncontained = false;
-              true
-            },
-          }
+          vvolumebelow.value.contained.push(*particleid);
+          unsafe { &mut *evil.offset(*particleid as isize) }.uncontained = vvolumebelow.children.is_some();
+          // match vvolumebelow.children {
+          //   Some(_) => {
+          //     if !vvolumebelow.value.bb.child_contains(&new_bb) {
+          //       vvolumebelow.value.contained.push(*particleid);
+          //       unsafe { &mut *evil.offset(*particleid as isize) }.uncontained = true;
+          //       // unsafe { uncontained = true; }
+          //       true
+          //     }
+          //     else {
+          //       false
+          //     }
+          //   },
+          //   None => {
+          //     vvolumebelow.value.contained.push(*particleid);
+          //     unsafe { &mut *evil.offset(*particleid as isize) }.uncontained = false;
+          //     true
+          //   },
+          // }
+
           // if added_to_branch {
           //   for vleaf in vvolumebelow.iter_mut().filter(is_leaf) {
           //     if vleaf.value.bb.overlaps(particle.bbox) {
@@ -523,16 +615,22 @@ impl VolumeRoot {
         });
         // particles[*particleid].uncontained = uncontained;
       }
-      // records.value.contained.clear();
-    }
-    for records in self.records.iter_mut() {
       records.value.contained.clear();
-    }
+    // }
+    });
+    // for records in self.records.iter_mut() {
+    //   records.value.contained.clear();
+    // }
   }
 
   fn update_leaves_uncontained(&mut self, particles: &mut Vec<Particle>) {
     // let mut contained_copy = Vec::<usize>::new();
-    for vvolume in self.root.iter_mut().rev().filter(is_not_leaf) {
+    let mut bb_clones = unsafe { &mut *(&mut self.bb_clone as *mut Vec<OldNew>) as &mut Vec<OldNew> };
+    self.root.walk_rev_mut(|vvolume| {
+      if vvolume.children.is_none() {
+        return;
+      }
+    // for vvolume in self.root.iter_mut().rev().filter(is_not_leaf) {
       // contained_copy.clear();
       // for particleid in vvolume.value.contained.iter() {
       //   // contained_copy.push((*particleid, particles[*particleid].bbox, self.old_particle_bb[*particleid]));
@@ -557,7 +655,7 @@ impl VolumeRoot {
       // for &particleid in contained_copy.iter() {
       let contained = unsafe { &*(&vvolume.value.contained as *const Vec<usize>) as &Vec<usize> };
       for &particleid in contained.iter() {
-        let OldNew { new: new_bb, old: old_bb } = self.bb_clone[particleid];
+        let OldNew { new: new_bb, old: old_bb } = bb_clones[particleid];
         let joined_bb = if old_bb.t == f32::INFINITY {
           new_bb
         }
@@ -598,7 +696,8 @@ impl VolumeRoot {
         //   add_uncontained_to_leaf(particleid, &mut vleaf.value.uncontained);
         // }
       }
-    }
+    // }
+    });
   }
 
   fn update_split_and_join(&mut self, particles: &mut Vec<Particle>) {
@@ -632,6 +731,14 @@ impl VolumeRoot {
         record.join();
       }
     }
+  }
+
+  fn walk_with_record_stack_rev_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut Vec<&mut VirtualRecord>) {
+    self.root.walk_with_record_stack_rev_mut(&mut self.records, &mut Vec::<&mut VirtualRecord>::with_capacity(16), &mut handle);
+  }
+
+  fn walk_with_record_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {
+    self.root.walk_with_record_mut(&mut self.records, &mut handle);
   }
 
   pub fn iter_volumes<'a>(&'a mut self) -> iter::FilterMap<

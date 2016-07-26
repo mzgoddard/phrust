@@ -43,6 +43,7 @@ impl Particle {
     // BB::from_circle(self.position, self.pressure_radius)
   }
 
+  #[inline]
   pub fn integrate(&mut self, dt2: f32) {
     // let lastpos = self.last_position * LAST_POS_MUL;
     let position = self.position;
@@ -56,7 +57,7 @@ impl Particle {
       );
     self.last_position = position;
     // self.acceleration = V2::zero();
-    self.bbox = self.bb();
+    // self.bbox = self.bb();
   }
 }
 
