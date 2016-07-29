@@ -20,6 +20,7 @@ pub struct WorldRenderer {
   color_attribute: GLuint,
   modelview_projection: GLint,
   buffer: [GLuint; 1],
+  data: Vec<particle>,
   // pub world: World,
   // glfw: glfw::Glfw,
   // window: glfw::Window,
@@ -102,6 +103,7 @@ impl WorldRenderer {
       color_attribute: 0,
       modelview_projection: 0,
       buffer: [0 as u32; 1],
+      data: Vec::<particle>::new(),
       // world: world,
       // glfw: glfw,
       // window: window,
@@ -165,7 +167,8 @@ impl WorldRenderer {
 
       // phv size = phv(640, 640);
       // float right = world->aabb.right,
-      let (right, left, top, bottom, z_far, z_near) = (640f32, 0f32, 640f32, 0f32, 1000f32, 0f32);
+      let bb = bb!(-640, -640, 640, 640);
+      let (right, left, top, bottom, z_far, z_near) = (bb.r, bb.l, bb.t, bb.b, 1000f32, 0f32);
       // let right = size.x,
       // left = 0,
       // // top = world->aabb.top,
@@ -193,29 +196,35 @@ impl WorldRenderer {
       gl::UniformMatrix4fv(self.modelview_projection, 1, gl::FALSE, matrix.as_mut_ptr() as *mut _);
 
       // let mut data : [particle; 65536] = [Default::default(); 65536];
-      let mut data = Vec::<particle>::new();
-      let mut num_particles : isize = 0;
-      // data[0] = bb!(160, 160, 480, 480)
-      // .into_particle(color!(b"\x00\x00\xff\xff"));
-      let blue = color!(b"\x00\x00\xff\x88");
-      let red = color!(b"\xff\x00\x00\x88");
-      let yellow = color!(b"\xff\xff\x00\x88");
-      let orange = color!(b"\xff\x88\x00\x88");
-      let white = color!(b"\xff\xff\xff\x88");
-      for (i, particle) in world.iter_particles().enumerate() {
-        num_particles = (i + 1) as isize;
-        let c = if particle.is_trigger() {
-          white
+      // let mut data = Vec::<particle>::new();
+      let mut num_particles : isize = world.iter_particles().count() as isize;
+      {
+        let mut data = &mut self.data;
+        data.reserve(num_particles as usize);
+        data.set_len(num_particles as usize);
+        // data[0] = bb!(160, 160, 480, 480)
+        // .into_particle(color!(b"\x00\x00\xff\xff"));
+        let blue = color!(b"\x00\x00\xff\x88");
+        let red = color!(b"\xff\x00\x00\x88");
+        let yellow = color!(b"\xff\xff\x00\x88");
+        let orange = color!(b"\xff\x88\x00\x88");
+        let white = color!(b"\xff\xff\xff\x88");
+        for (i, particle) in world.iter_particles().enumerate() {
+          // num_particles = (i + 1) as isize;
+          let c = if particle.is_trigger() {
+            white
+          }
+          else if particle.uncontained {
+            // red
+            if i % 100 == 0 {orange} else {red}
+          }
+          else {
+            // blue
+            if i % 100 == 0 {yellow} else {blue}
+          };
+          // data.push(particle.bbox.into_particle(c));
+          data[i] = particle.bbox.into_particle(c);
         }
-        else if particle.uncontained {
-          // red
-          if i % 100 == 0 {orange} else {red}
-        }
-        else {
-          // blue
-          if i % 100 == 0 {yellow} else {blue}
-        };
-        data.push(particle.bbox.into_particle(c));
       }
       // data[0] = particle {
       //   vertices: [
@@ -238,14 +247,16 @@ impl WorldRenderer {
       // }
 
       gl::BindBuffer(gl::ARRAY_BUFFER, self.buffer[0]);
-      let mut data_ptr : *const raw::c_void = ptr::null();
-      data_ptr = data.as_ptr() as *const raw::c_void;
-      gl::BufferData(
-        gl::ARRAY_BUFFER,
-        72 * num_particles,
-        data_ptr,
-        gl::DYNAMIC_DRAW
-      );
+      {
+        let mut data_ptr : *const raw::c_void = ptr::null();
+        data_ptr = self.data.as_ptr() as *const raw::c_void;
+        gl::BufferData(
+          gl::ARRAY_BUFFER,
+          72 * num_particles,
+          data_ptr,
+          gl::DYNAMIC_DRAW
+        );
+      }
 
       let position_offset : *const raw::c_void = ptr::null();
       gl::VertexAttribPointer(self.position_attribute, 2, gl::FLOAT, gl::FALSE, 12, position_offset);
