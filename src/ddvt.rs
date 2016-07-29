@@ -56,6 +56,55 @@ pub struct VolumeRoot {
   bb_clone: Vec<OldNew>,
 }
 
+struct RecordStack<'a> {
+  record: &'a mut QuadTree<VirtualRecord>,
+}
+
+struct RecordStackIter<'a> {
+  origin: &'a mut QuadTree<VirtualRecord>,
+  record: Option<*mut QuadTree<VirtualRecord>>,
+}
+
+impl<'a> RecordStack<'a> {
+  fn new(tree: &'a mut QuadTree<VirtualRecord>) -> RecordStack {
+    RecordStack {
+      record: tree,
+    }
+  }
+
+  fn iter_mut(&mut self) -> RecordStackIter {
+    RecordStackIter::new(self.record)
+  }
+
+  fn last_mut(&mut self) -> &mut VirtualRecord {
+    &mut self.record.value
+  }
+}
+
+impl<'a> RecordStackIter<'a> {
+  fn new(tree: &'a mut QuadTree<VirtualRecord>) -> RecordStackIter<'a> {
+    let record_evil = unsafe { &mut *tree as *mut QuadTree<VirtualRecord> };
+    RecordStackIter {
+      origin: tree,
+      record: Some(record_evil)
+    }
+  }
+}
+
+impl<'a> Iterator for RecordStackIter<'a> {
+  type Item = &'a mut VirtualRecord;
+  fn next(&mut self) -> Option<Self::Item> {
+    let record = self.record.take();
+    if let Some(tree) = record {
+      self.record = unsafe { &mut *tree }.parent;
+    }
+    fn coerce<'a>(tree: *mut QuadTree<VirtualRecord>) -> &'a mut VirtualRecord {
+      &mut unsafe { &mut *tree }.value
+    }
+    record.map(coerce)
+  }
+}
+
 impl VirtualVolume {
   fn contains(&self, particle: &Particle) -> bool {
     self.bb.contains(&particle.bbox)
@@ -83,10 +132,16 @@ impl QuadTree<VirtualVolume> {
 
   fn _walk_mut<F>(&mut self, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
     if let Some(ref mut children) = self.children {
-      children[0]._walk_mut(handle);
-      children[1]._walk_mut(handle);
-      children[2]._walk_mut(handle);
-      children[3]._walk_mut(handle);
+      let c = children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
+        }
+      }
+      ptr_offset!(c, 0)._walk_mut(handle);
+      ptr_offset!(c, 1)._walk_mut(handle);
+      ptr_offset!(c, 2)._walk_mut(handle);
+      ptr_offset!(c, 3)._walk_mut(handle);
     }
     handle(self);
   }
@@ -95,34 +150,84 @@ impl QuadTree<VirtualVolume> {
     self._walk_rev_mut(&mut handle);
   }
 
-  fn _walk_rev_mut<F>(&mut self, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
+  fn _walk_rev_mut(&mut self, handle: &mut FnMut(&mut QuadTree<VirtualVolume>)) {
     handle(self);
     if let Some(ref mut children) = self.children {
-      children[0]._walk_rev_mut(handle);
-      children[1]._walk_rev_mut(handle);
-      children[2]._walk_rev_mut(handle);
-      children[3]._walk_rev_mut(handle);
+      let c = children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
+        }
+      }
+      ptr_offset!(c, 0)._walk_rev_mut(handle);
+      ptr_offset!(c, 1)._walk_rev_mut(handle);
+      ptr_offset!(c, 2)._walk_rev_mut(handle);
+      ptr_offset!(c, 3)._walk_rev_mut(handle);
+    }
+  }
+
+  fn walk_with_record_rev_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {
+    self._walk_with_record_rev_mut(record, &mut handle);
+  }
+
+  fn _walk_with_record_rev_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {
+    handle(self, record);
+    if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut self.children, &mut record.children) {
+      let vc = volume_children.as_mut_ptr();
+      let rc = record_children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
+        }
+      }
+      ptr_offset!(vc, 0)._walk_with_record_rev_mut(ptr_offset!(rc, 0), handle);
+      ptr_offset!(vc, 1)._walk_with_record_rev_mut(ptr_offset!(rc, 1), handle);
+      ptr_offset!(vc, 2)._walk_with_record_rev_mut(ptr_offset!(rc, 2), handle);
+      ptr_offset!(vc, 3)._walk_with_record_rev_mut(ptr_offset!(rc, 3), handle);
     }
   }
 
   fn walk_bb_mut(&mut self, b: BB, handle: &Fn(&mut VirtualVolume)) {
     if let Some(ref mut children) = self.children {
-      let cx = (self.value.bb.l + self.value.bb.r) / 2f32;
-      let cy = (self.value.bb.b + self.value.bb.t) / 2f32;
-      if cy < b.t {
-        if cx > b.l {
-          children[0].walk_bb_mut(b, handle);
-        }
-        if cx < b.r {
-          children[1].walk_bb_mut(b, handle);
+      let c = children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
         }
       }
-      if cy > b.b {
-        if cx > b.l {
-          children[2].walk_bb_mut(b, handle);
+
+      let cx = (self.value.bb.l + self.value.bb.r) / 2f32;
+      let cy = (self.value.bb.b + self.value.bb.t) / 2f32;
+      if cy <= b.t {
+        if cx >= b.l {
+          ptr_offset!(c, 0).walk_bb_mut(b, handle);
+          if cx <= b.r {
+            ptr_offset!(c, 1).walk_bb_mut(b, handle);
+            if cy >= b.b {
+              ptr_offset!(c, 2).walk_bb_mut(b, handle);
+              ptr_offset!(c, 3).walk_bb_mut(b, handle);
+            }
+          }
+          else if cy >= b.b {
+            ptr_offset!(c, 2).walk_bb_mut(b, handle);
+          }
         }
-        if cx < b.r {
-          children[3].walk_bb_mut(b, handle);
+        else {
+          ptr_offset!(c, 1).walk_bb_mut(b, handle);
+          if cy >= b.b {
+            ptr_offset!(c, 3).walk_bb_mut(b, handle);
+          }
+        }
+      }
+      else {
+        if cx >= b.l {
+          ptr_offset!(c, 2).walk_bb_mut(b, handle);
+          if cx <= b.r {
+            ptr_offset!(c, 3).walk_bb_mut(b, handle);
+          }
+        }
+        else {
+          ptr_offset!(c, 3).walk_bb_mut(b, handle);
         }
       }
     }
@@ -133,15 +238,22 @@ impl QuadTree<VirtualVolume> {
 
   fn walk_contain_bb_search_mut<F>(&mut self, b: BB, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
     let found = if let Some(ref mut children) = self.children {
+      let c = children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
+        }
+      }
+
       let cx = (self.value.bb.l + self.value.bb.r) / 2f32;
       let cy = (self.value.bb.b + self.value.bb.t) / 2f32;
       if cy <= b.b {
         if cx >= b.r {
-          children[0].walk_contain_bb_search_mut(b, handle);
+          ptr_offset!(c, 0).walk_contain_bb_search_mut(b, handle);
           false
         }
         else if cx <= b.l {
-          children[1].walk_contain_bb_search_mut(b, handle);
+          ptr_offset!(c, 1).walk_contain_bb_search_mut(b, handle);
           false
         }
         else {
@@ -150,11 +262,11 @@ impl QuadTree<VirtualVolume> {
       }
       else if cy >= b.t {
         if cx >= b.r {
-          children[2].walk_contain_bb_search_mut(b, handle);
+          ptr_offset!(c, 2).walk_contain_bb_search_mut(b, handle);
           false
         }
         else if cx <= b.l {
-          children[3].walk_contain_bb_search_mut(b, handle);
+          ptr_offset!(c, 3).walk_contain_bb_search_mut(b, handle);
           false
         }
         else {
@@ -173,9 +285,9 @@ impl QuadTree<VirtualVolume> {
     }
   }
 
-  fn walk_with_record_stack_rev_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, record_stack: &mut Vec<&mut VirtualRecord>, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut Vec<&mut VirtualRecord>) {
-    let l = record_stack.len();
-    record_stack.push(unsafe { &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord });
+  fn walk_with_record_stack_rev_mut(&mut self, record: &mut QuadTree<VirtualRecord>, handle: &mut FnMut(&mut QuadTree<VirtualVolume>, &mut RecordStack)) {
+    // let l = record_stack.len();
+    // record_stack.push(unsafe { &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord });
     // unsafe {
     //   if l == record_stack.capacity() {
     //     record_stack.reserve(l * 2);
@@ -183,27 +295,43 @@ impl QuadTree<VirtualVolume> {
     //   record_stack.set_len(l + 1);
     //   *(*record_stack).as_mut_ptr().offset(l as isize) = &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord;
     // }
-    handle(self, record_stack);
+    handle(self, &mut RecordStack::new(record));
     if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut self.children, &mut record.children) {
-      volume_children[0].walk_with_record_stack_rev_mut(&mut record_children[0], record_stack, handle);
-      volume_children[1].walk_with_record_stack_rev_mut(&mut record_children[1], record_stack, handle);
-      volume_children[2].walk_with_record_stack_rev_mut(&mut record_children[2], record_stack, handle);
-      volume_children[3].walk_with_record_stack_rev_mut(&mut record_children[3], record_stack, handle);
+      let vc = volume_children.as_mut_ptr();
+      let rc = record_children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
+        }
+      }
+      ptr_offset!(vc, 0).walk_with_record_stack_rev_mut(ptr_offset!(rc, 0), handle);
+      ptr_offset!(vc, 1).walk_with_record_stack_rev_mut(ptr_offset!(rc, 1), handle);
+      ptr_offset!(vc, 2).walk_with_record_stack_rev_mut(ptr_offset!(rc, 2), handle);
+      ptr_offset!(vc, 3).walk_with_record_stack_rev_mut(ptr_offset!(rc, 3), handle);
+      // volume_children[0].walk_with_record_stack_rev_mut(&mut record_children[0], handle);
+      // volume_children[1].walk_with_record_stack_rev_mut(&mut record_children[1], handle);
+      // volume_children[2].walk_with_record_stack_rev_mut(&mut record_children[2], handle);
+      // volume_children[3].walk_with_record_stack_rev_mut(&mut record_children[3], handle);
     }
-    unsafe {
-      record_stack.set_len(l);
-    }
+    // unsafe {
+    //   record_stack.set_len(l);
+    // }
     // record_stack.pop();
   }
 
   fn walk_with_record_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {
-    if let Some(ref mut volume_children) = self.children {
-      if let Some(ref mut record_children) = record.children {
-        volume_children[0].walk_with_record_mut(&mut record_children[0], handle);
-        volume_children[1].walk_with_record_mut(&mut record_children[1], handle);
-        volume_children[2].walk_with_record_mut(&mut record_children[2], handle);
-        volume_children[3].walk_with_record_mut(&mut record_children[3], handle);
+    if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut self.children, &mut record.children) {
+      let vc = volume_children.as_mut_ptr();
+      let rc = record_children.as_mut_ptr();
+      macro_rules! ptr_offset {
+        ($p : expr, $i : expr) => {
+          unsafe { &mut *$p.offset($i as isize) }
+        }
       }
+      ptr_offset!(vc, 0)._walk_with_record_rev_mut(ptr_offset!(rc, 0), handle);
+      ptr_offset!(vc, 1)._walk_with_record_rev_mut(ptr_offset!(rc, 1), handle);
+      ptr_offset!(vc, 2)._walk_with_record_rev_mut(ptr_offset!(rc, 2), handle);
+      ptr_offset!(vc, 3)._walk_with_record_rev_mut(ptr_offset!(rc, 3), handle);
     }
     handle(self, record);
   }
@@ -356,6 +484,18 @@ impl TreeJoinableWith for VirtualVolume {
     }
     for particle_id in children[3].contained.iter() {
       self.contained.push(*particle_id);
+    }
+
+    for &particle_id in children[0].uncontained.iter()
+    .chain(children[1].uncontained.iter())
+    .chain(children[2].uncontained.iter())
+    .chain(children[3].uncontained.iter()) {
+      if index_in_uncontained(particle_id, &self.contained) != usize::MAX {
+        particles[particle_id].uncontained = false;
+      }
+      else if index_in_uncontained(particle_id, &self.uncontained) == usize::MAX {
+        self.uncontained.push(particle_id);
+      }
     }
 
     for particle_id in children[0].contained_triggers.iter() {
@@ -548,14 +688,14 @@ impl VolumeRoot {
     let mut deeper_triggers = Vec::<usize>::new();
     let mut bb_clones = unsafe { &mut *(&mut self.bb_clone as *mut Vec<OldNew>) as &mut Vec<OldNew> };
 
-    self.walk_with_record_stack_rev_mut(|vvolume, recordset| {
+    self.walk_with_record_stack_rev_mut(&mut |vvolume, recordset| {
       let bb = vvolume.value.bb;
       let branch = vvolume.children.is_some();
       vvolume.value.contained.retain(|&particleid| {
         let new_bb = bb_clones[particleid].new;
         if !bb.contains(&new_bb) {
           removed.push(particleid);
-          for vparent in recordset.iter_mut().rev().skip(1) {
+          for vparent in recordset.iter_mut().skip(1) {
             if vparent.bb.contains(&new_bb) {
               vparent.contained.push(particleid);
               break;
@@ -565,9 +705,8 @@ impl VolumeRoot {
         }
         else if branch && bb.child_contains(&new_bb) {
           deeper.push(particleid);
-          if let Some(record) = recordset.last_mut() {
-            record.contained.push(particleid);
-          }
+          let record = recordset.last_mut();
+          record.contained.push(particleid);
           false
         }
         else {
@@ -579,7 +718,7 @@ impl VolumeRoot {
         let new_bb = bb_clones[particleid].new;
         if !bb.contains(&new_bb) {
           removed_triggers.push(particleid);
-          for vparent in recordset.iter_mut().rev().skip(1) {
+          for vparent in recordset.iter_mut().skip(1) {
             if vparent.bb.contains(&new_bb) {
               vparent.contained_triggers.push(particleid);
               break;
@@ -589,9 +728,8 @@ impl VolumeRoot {
         }
         else if branch && bb.child_contains(&new_bb) {
           deeper_triggers.push(particleid);
-          if let Some(record) = recordset.last_mut() {
-            record.contained_triggers.push(particleid);
-          }
+          let record = recordset.last_mut();
+          record.contained_triggers.push(particleid);
           false
         }
         else {
@@ -635,7 +773,7 @@ impl VolumeRoot {
           });
           bb_clones[particleid].old = BB::infinity();
         }
-        removed.clear();
+        removed_triggers.clear();
       }
       if deeper_triggers.len() > 0 {
         for &particleid in deeper_triggers.iter() {
@@ -652,7 +790,7 @@ impl VolumeRoot {
             BB::infinity()
           };
         }
-        deeper.clear();
+        deeper_triggers.clear();
       }
     });
   }
@@ -728,8 +866,9 @@ impl VolumeRoot {
   }
 
   fn update_split_and_join(&mut self, particles: &mut Vec<Particle>) {
-    for (vvolume, record) in self.root.iter_mut().rev()
-    .zip(self.records.iter_mut().rev()) {
+    self.root.walk_with_record_rev_mut(&mut self.records, |vvolume, record| {
+    // for (vvolume, record) in self.root.iter_mut().rev()
+    // .zip(self.records.iter_mut().rev()) {
       if vvolume.is_leaf() {
         if vvolume.value.len() >= MAX_LEAF_VOLUME {
           println!("split {}", vvolume.value.bb);
@@ -750,11 +889,11 @@ impl VolumeRoot {
         vvolume.join_with(particles);
         record.join();
       }
-    }
+    });
   }
 
-  fn walk_with_record_stack_rev_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut Vec<&mut VirtualRecord>) {
-    self.root.walk_with_record_stack_rev_mut(&mut self.records, &mut Vec::<&mut VirtualRecord>::with_capacity(16), &mut handle);
+  fn walk_with_record_stack_rev_mut(&mut self, handle: &mut FnMut(&mut QuadTree<VirtualVolume>, &mut RecordStack)) {
+    self.root.walk_with_record_stack_rev_mut(&mut self.records, handle);
   }
 
   fn walk_with_record_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {

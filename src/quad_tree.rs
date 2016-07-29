@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::ptr;
 use std::iter;
 use std::collections::linked_list;
 use std::collections::LinkedList;
@@ -22,6 +23,7 @@ pub trait TreeJoinableWith {
 #[derive(Default)]
 pub struct QuadTree<T> {
   pub value: T,
+  pub parent: Option<*mut QuadTree<T>>,
   pub children: Option<Box<[QuadTree<T>; 4]>>,
 }
 
@@ -107,6 +109,7 @@ impl<T> QuadTree<T> {
   pub fn new(value: T) -> QuadTree<T> {
     QuadTree::<T> {
       value: value,
+      parent: None,
       children: None,
     }
   }
@@ -177,21 +180,26 @@ impl<T> QuadTree<T> {
 
 impl<T> QuadTree<T> where T: TreeSplitable + TreeJoinable + Default {
   pub fn split(&mut self) {
+    let parent_ptr = Some(unsafe { &mut *self as *mut QuadTree<T> });
     self.children = Some(Box::new([
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
     ]));
@@ -231,21 +239,26 @@ impl<T> QuadTree<T> where T: TreeSplitable + TreeJoinable + Default {
 
 impl<T> QuadTree<T> where T: TreeSplitableWith + TreeJoinableWith + Default {
   pub fn split_with(&mut self, data: &mut Any) {
+    let parent_ptr = Some(unsafe { &mut *self as *mut QuadTree<T> });
     self.children = Some(Box::new([
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
       QuadTree::<T> {
         value: T::default(),
+        parent: parent_ptr,
         children: None,
       },
     ]));
@@ -516,6 +529,7 @@ fn test_quad_tree_pointer_iter() {
   }
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -538,10 +552,12 @@ fn test_quad_tree_pointer_iter() {
 fn test_deeper_quad_tree_pointer_iter() {
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -578,10 +594,12 @@ fn test_deeper_quad_tree_pointer_next_back() {
   }
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -800,6 +818,7 @@ fn test_deeper_quad_tree_pointer_next_back() {
 fn test_quad_tree_iter() {
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -822,10 +841,12 @@ fn test_quad_tree_iter() {
 fn test_deeper_quad_tree_iter() {
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -856,6 +877,7 @@ fn test_deeper_quad_tree_iter() {
 fn test_quad_tree_next_back() {
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -878,10 +900,12 @@ fn test_quad_tree_next_back() {
 fn test_deeper_quad_tree_next_back() {
   let tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -1620,10 +1644,12 @@ impl<'a, T> DoubleEndedIterator for QuadTreeIterMutFilter<'a, T> {
 fn test_deeper_quad_tree_iter_filter_mut() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -1633,6 +1659,7 @@ fn test_deeper_quad_tree_iter_filter_mut() {
       },
       QuadTree::<i32> {
         value: 3,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(9),
           QuadTree::<i32>::new(10),
@@ -2026,6 +2053,7 @@ impl<'a, T> DoubleEndedIterator for QuadTreeIterMutStack<'a, T> {
 fn test_quad_tree_iter_mut() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -2051,10 +2079,12 @@ fn test_quad_tree_iter_mut() {
 fn test_deeper_quad_tree_iter_mut() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -2088,6 +2118,7 @@ fn test_deeper_quad_tree_iter_mut() {
 fn test_quad_tree_iter_mut_back() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -2113,10 +2144,12 @@ fn test_quad_tree_iter_mut_back() {
 fn test_deeper_quad_tree_iter_mut_back() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32> {
         value: 2,
+        parent: None,
         children: Some(Box::new([
           QuadTree::<i32>::new(5),
           QuadTree::<i32>::new(6),
@@ -2150,6 +2183,7 @@ fn test_deeper_quad_tree_iter_mut_back() {
 fn test_quad_tree_iter_stack() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -2196,6 +2230,7 @@ fn test_quad_tree_iter_stack() {
 fn test_quad_tree_iter_stack_mut() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -2232,6 +2267,7 @@ fn test_quad_tree_iter_stack_mut() {
 fn test_quad_tree_iter_stack_mut_rev() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -2338,6 +2374,7 @@ fn test_quad_tree_split_in_iter() {
 fn test_quad_tree_join() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
@@ -2372,6 +2409,7 @@ fn test_quad_tree_split_with() {
 fn test_quad_tree_join_with() {
   let mut tree = QuadTree::<i32> {
     value: 0,
+    parent: None,
     children: Some(Box::new([
       QuadTree::<i32>::new(1),
       QuadTree::<i32>::new(2),
