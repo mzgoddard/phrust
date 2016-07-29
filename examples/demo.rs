@@ -209,7 +209,6 @@ impl Flow {
     }
     let last_flow = flows.last().cloned().unwrap_or(v2!(0, 1));
     flows.push(last_flow);
-    println!("{:?}", flows);
 
     Flow {
       particles: positions.iter().map(|p| Particle {
@@ -250,6 +249,55 @@ struct InputState {
   cursor_press: bool,
 }
 
+#[derive(Default)]
+struct FlowController {
+  effect_ref: Option<WorldEffectRef>,
+  positions: Vec<V2>,
+  cursor_press: bool,
+}
+
+impl FlowController {
+  fn update(&mut self, input_state: &InputState, world: &mut World) {
+    if !input_state.cursor_press && !self.cursor_press {
+      self.cursor_press = true;
+    }
+    if input_state.cursor_press && self.cursor_press && self.positions.len() < 20 {
+      let cursor = input_state.cursor;
+      if let Some(mut last) = self.positions.last().cloned() {
+        while last.dist(cursor) > 25.0 && self.positions.len() < 20 {
+          let unit = (cursor - last).unit();
+          last = last + unit.scale(25.0);
+          self.add_position(last);
+        }
+      }
+      else {
+        self.add_position(cursor);
+      }
+      self.add_effect(world);
+    }
+    else if self.positions.len() > 0 {
+      self.cursor_press = false;
+      self.add_effect(world);
+      self.clear_positions();
+    }
+  }
+
+  fn add_position(&mut self, pos: V2) {
+    self.positions.push(pos);
+  }
+
+  fn clear_positions(&mut self) {
+    self.positions.clear();
+  }
+
+  fn add_effect(&mut self, world: &mut World) {
+    if let Some(effect_ref) = self.effect_ref.take() {
+      world.remove_effect(effect_ref);
+    }
+    self.effect_ref = Some(world.add_effect(Flow::new(0.01, 50.0, self.positions.clone())));
+  }
+}
+
 pub fn main() {
   let world_bb = bb!(-320, -640, 320, 640);
   let mut world = world::World::new(world_bb);
@@ -260,7 +308,7 @@ pub fn main() {
   for i in 0..(8192 * 2) {
     let Open01(factor_rand) = random::<Open01<f32>>();
     let Open01(radius_rand) = random::<Open01<f32>>();
-    let radius_base = 2.5;
+    let radius_base = 4.0;
     let radius_range = 2.0;
     let radius_mid = radius_base + radius_range / 2.0;
     let radius_max = radius_base + radius_range;
@@ -270,39 +318,20 @@ pub fn main() {
       position: v2!(
         world_bb.l + radius_max + (i % per_row) as f32 * radius_mid * 2.0,
         world_bb.b + radius_max + (i / per_row) as f32 * radius_mid * 0.65),
-      last_position: v2!(
-        world_bb.l + radius_max + (i % per_row) as f32 * radius_mid * 2.0,
-        world_bb.b + radius_max + (i / per_row) as f32 * radius_mid * 0.65),
       radius: radius,
-      // radius2: radius * radius,
       friction: 0.03,
       friction2: 0.0009,
       drag: 0.9999,
-      // factor: 0.75f32,
-      // factor: 0.5f32 + factor_rand / 2.5,
       mass: f32::consts::PI * radius * radius,
-      // bbox: BB::from_circle(v2!(3 + (i % 128) * 3, 320 + (i / 128) * 3), 3f32),
       .. Default::default()
     });
   }
-
-  // let mut trigger = particle::Particle {
-  //   position: v2!(0, -320),
-  //   last_position: v2!(0, -320),
-  //   radius: 50.0,
-  //   // radius2: 50.0 * 50.0,
-  //   state: particle::State::Trigger,
-  //   .. Default::default()
-  // };
-  // world.add_particle(&mut trigger);
 
   let mut pulse_effect_ref = world.add_effect(Pulse {
     radians: 0.0,
     trigger: particle::Particle {
       position: v2!(0, -320),
-      last_position: v2!(0, -320),
       radius: 50.0,
-      // radius2: 50.0 * 50.0,
       state: particle::State::Trigger,
       .. Default::default()
     },
@@ -312,9 +341,7 @@ pub fn main() {
     radians: 0.0,
     trigger: particle::Particle {
       position: v2!(160, -320),
-      last_position: v2!(160, -320),
       radius: 50.0,
-      // radius2: 50.0 * 50.0,
       state: particle::State::Trigger,
       .. Default::default()
     },
@@ -324,26 +351,23 @@ pub fn main() {
     radians: 0.0,
     trigger: particle::Particle {
       position: v2!(-160, -320),
-      last_position: v2!(-160, -320),
       radius: 50.0,
-      // radius2: 50.0 * 50.0,
       state: particle::State::Trigger,
       .. Default::default()
     },
   });
 
-  let mut flow_positions = Vec::<V2>::new();
-  let mut flow_ref : Option<WorldEffectRef> = None;
   let mut input_state = InputState {
     cursor: v2!(0, 0),
     cursor_press: false,
   };
 
-  flow_ref = Some(world.add_effect(Flow::new(0.01, 50.0, vec!(
-    v2!(0, -295),
-    v2!(0, -270),
-    v2!(0, -245),
-  ))));
+  let mut flow_controller = FlowController { .. Default::default() };
+  flow_controller.add_position(v2!(0, -295));
+  flow_controller.add_position(v2!(0, -270));
+  flow_controller.add_position(v2!(0, -245));
+  flow_controller.add_effect(&mut world);
+  flow_controller.clear_positions();
 
   let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
 
@@ -373,77 +397,22 @@ pub fn main() {
       handle_window_event(&mut input_state, &mut window, event);
     }
 
-    if input_state.cursor_press && flow_positions.len() < 20 {
-      let cursor = input_state.cursor.scale(2.0) - v2!(640, 640);
-      if let Some(mut last) = flow_positions.last().cloned() {
-        while last.dist(cursor) > 25.0 && flow_positions.len() < 20 {
-          let unit = (cursor - last).unit();
-          last = last + unit.scale(25.0);
-          flow_positions.push(last);
-        }
-      }
-      else {
-        flow_positions.push(cursor);
-      }
-      if let Some(flow_ref) = flow_ref.take() {
-        world.remove_effect(flow_ref);
-      }
-      flow_ref = Some(world.add_effect(Flow::new(0.01, 50.0, flow_positions.clone())));
-    }
-    else if flow_positions.len() > 0 {
-      input_state.cursor_press = false;
-      if let Some(flow_ref) = flow_ref.take() {
-        world.remove_effect(flow_ref);
-      }
-      flow_ref = Some(world.add_effect(Flow::new(0.01, 50.0, flow_positions.clone())));
-      flow_positions.clear();
-    }
+    flow_controller.update(&input_state, &mut world);
 
     let start = Instant::now();
-    // world.remove_particle(&mut particle::Particle {
-    //   id: remove_id,
-    //   .. Default::default()
-    // });
-    // remove_id += 1;
-    let dt = world.dt;
-    radians += dt;
-    {
-      // world.borrow_effect_mut(&mut pulse_effect_ref).get_type_id();
-      if let Some(ref mut pulse_effect) = pulse_effect_ref.as_downcast_mut::<Pulse>(&mut world) {
-        // println!("{}", pulse_effect.radians);
-        pulse_effect.radians += 0.05;
-      }
-      // if let Some(ref mut pulse_effect) = (world.borrow_effect_mut(&mut pulse_effect_ref) as &mut Any).downcast_mut::<Pulse>() {
-      // }
-    }
-    // world.bb.l = -320.0 + (radians / 10.0).sin() * 160.0;
-    // world.bb.r = world.bb.l + 640.0;
-    // world.read_particle(&mut trigger);
-    // trigger.position.x -= 1.0;
-    // if trigger.position.x < trigger.radius {
-    //   trigger.position.x = 640.0 - trigger.radius;
-    // }
-    // // trigger.position.x = 320.0 + 160.0 * (radians as f32).sin();
-    // world.write_particle(&mut trigger);
-    // world.walk_triggered(&mut trigger, |world, trigger, triggered| {
-    //   // println!("{} {}", triggered.position, triggered.id);
-    //   // world.remove_particle(triggered);
-    //   // triggered.last_position = triggered.last_position + (trigger.position - triggered.position).unit().scale(25.0 * world.dt);
-    //   triggered.last_position.x -= 5.0 * world.dt;
-    //   triggered.last_position.y -= 5.0 * world.dt;
-    // });
+
     world.step();
-    // let end = now();
+
     let elapsed = start.elapsed();
     let duration = seconds(elapsed.as_secs(), elapsed.subsec_nanos());
-    // println!("{:.2}ms", (end - start) * 1000.0);
-    // panic!("done now!");
+
     more_frames.push_back(duration);
     if more_frames.len() >= 1000 {
       more_frames.pop_front();
     }
     frames[frame_index] = duration;
     frame_index += 1;
+
     if frame_index >= MAX_FRAMES {
       let avg = frames.iter().fold(0f64, |carry, &frame| carry + frame) / 60f64  * 1000f64;
       let more_avg = more_frames.iter().fold(0f64, |carry, &frame| carry + frame) / more_frames.len() as f64  * 1000f64;
@@ -475,12 +444,10 @@ fn handle_window_event(state: &mut InputState, window: &mut glfw::Window, event:
       window.set_should_close(true)
     }
     glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, press, _) => {
-      // println!("button left {:?}", press);
       state.cursor_press = press == glfw::Action::Press;
     }
     glfw::WindowEvent::CursorPos(x, y) => {
-      // println!("mouse move to {}", v2!(x, 640.0 - y));
-      state.cursor = v2!(x, 640.0 - y);
+      state.cursor = v2!(x, 640.0 - y).scale(2.0) - v2!(640, 640);
     }
     _ => {}
   }
