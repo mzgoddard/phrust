@@ -1,4 +1,5 @@
 use std::ops::*;
+use std::f32;
 use std::f32::EPSILON;
 use std::fmt;
 // use std::num::Float;
@@ -76,6 +77,10 @@ impl V2 {
   #[inline]
   pub fn zero() -> V2 {
     V2 { x: 0f32, y: 0f32 }
+  }
+
+  pub fn infinity() -> V2 {
+    V2 { x: f32::INFINITY, y: f32::INFINITY }
   }
 
   #[inline]

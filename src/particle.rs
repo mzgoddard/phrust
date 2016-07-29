@@ -22,18 +22,18 @@ pub struct Particle {
   pub last_position: V2,
   pub acceleration: V2,
   pub radius: f32,
-  pub radius2: f32,
   pub mass: f32,
+  pub drag: f32,
   pub friction: f32,
-  pub factor: f32,
+  pub friction2: f32,
   pub state: State,
   pub bbox: BB,
   pub uncontained: bool,
   // pub old_ddvt_position: V2,
 }
 
-const LAST_POS_MUL : f32 = -0.99;
-const POS_MUL : f32 = 1.99;
+const LAST_POS_MUL : f32 = -0.999;
+const POS_MUL : f32 = 1.999;
 
 // impl Deref for ParticleId {
 //
@@ -65,9 +65,9 @@ impl Particle {
     let position = self.position;
     self.position =
       self.position.scale_add(
-        POS_MUL,
+        self.drag + 1.0,
         self.last_position.scale_add(
-          LAST_POS_MUL,
+          -self.drag,
           self.acceleration.scale(dt2)
         )
       );
@@ -102,14 +102,15 @@ impl Default for Particle {
   fn default() -> Particle {
     Particle {
       id: Default::default(),
+      // worldid: Default::default(),
       position: Default::default(),
-      last_position: Default::default(),
+      last_position: V2::infinity(),
       acceleration: Default::default(),
       radius: 1f32,
-      radius2: 1f32,
       mass: 1f32,
+      drag: 0.999,
       friction: 0.01f32,
-      factor: 0.5f32,
+      friction2: 0.0001f32,
       state: State::Dynamic,
       bbox: Default::default(),
       uncontained: false,

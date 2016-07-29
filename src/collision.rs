@@ -46,68 +46,73 @@ fn bad_rt(v: f32) -> f32 {
 }
 
 impl Collision {
-  #[inline]
-  pub fn test(a: &Particle, b: &Particle,
-    // a_index: usize, b_index: usize
-  ) -> Option<Collision> {
-    let ingress = (a.position - b.position).mag2();
-    if a.radius2 + b.radius2 > ingress {
-    // if a.pressure_radius2 + b.pressure_radius2 > ingress {
-      Some(Collision {
-        // a_ddvt_index: a_index, b_ddvt_index: b_index,
-        ingress: ingress, pqt: 0f32 })
-    } else {
-      None
-    }
-  }
+  // #[inline]
+  // pub fn test(a: &Particle, b: &Particle,
+  //   // a_index: usize, b_index: usize
+  // ) -> Option<Collision> {
+  //   let ingress = (a.position - b.position).mag2();
+  //   if a.radius2 + b.radius2 > ingress {
+  //   // if a.pressure_radius2 + b.pressure_radius2 > ingress {
+  //     Some(Collision {
+  //       // a_ddvt_index: a_index, b_ddvt_index: b_index,
+  //       ingress: ingress, pqt: 0f32 })
+  //   } else {
+  //     None
+  //   }
+  // }
 
-  pub fn solve(self, a: &Particle, b: &Particle) -> (V2, V2, V2, V2) {
-    // let a = self.a.unwrap();
-    // let b = self.b.unwrap();
-    let ingress = self.ingress.sqrt() + EPSILON;
-    let factor = a.factor * b.factor;
-    let pqt = ((a.radius + b.radius) / ingress - 1f32) * factor;
-    // let pqt = ((a.pressure_radius + b.pressure_radius) / ingress - 1f32) * factor;
-    let lamb = (a.position - b.position).scale(pqt);
-    let total_mass = a.mass + b.mass;
-    let a_mass_coeff = b.mass / total_mass;
-    let b_mass_coeff = a.mass / total_mass;
-    // let total_mass = a.pressure_mass + b.pressure_mass;
-    // let a_mass_coeff = b.pressure_mass / total_mass;
-    // let b_mass_coeff = a.pressure_mass / total_mass;
-    let friction = 1.0 - a.friction * b.friction;
-    let av = (a.last_position - a.position).scale(friction);
-    let bv = (b.last_position - b.position).scale(friction);
-
-    (
-      a.position + lamb.scale(a_mass_coeff),
-      a.position + av,
-      b.position - lamb.scale(b_mass_coeff),
-      b.position + bv
-    )
-    // a.last_position = a.position + av;
-    // a.position = a.position + lamb.scale(a_mass_coeff);
-    //
-    // b.last_position = b.position + bv;
-    // b.position = b.position - lamb.scale(b_mass_coeff);
-  }
+  // pub fn solve(self, a: &Particle, b: &Particle) -> (V2, V2, V2, V2) {
+  //   // let a = self.a.unwrap();
+  //   // let b = self.b.unwrap();
+  //   let ingress = self.ingress.sqrt() + EPSILON;
+  //   let factor = a.factor * b.factor;
+  //   let pqt = ((a.radius + b.radius) / ingress - 1f32) * factor;
+  //   // let pqt = ((a.pressure_radius + b.pressure_radius) / ingress - 1f32) * factor;
+  //   let lamb = (a.position - b.position).scale(pqt);
+  //   let total_mass = a.mass + b.mass;
+  //   let a_mass_coeff = b.mass / total_mass;
+  //   let b_mass_coeff = a.mass / total_mass;
+  //   // let total_mass = a.pressure_mass + b.pressure_mass;
+  //   // let a_mass_coeff = b.pressure_mass / total_mass;
+  //   // let b_mass_coeff = a.pressure_mass / total_mass;
+  //   let friction = 1.0 - a.friction * b.friction;
+  //   let av = (a.last_position - a.position).scale(friction);
+  //   let bv = (b.last_position - b.position).scale(friction);
+  //
+  //   (
+  //     a.position + lamb.scale(a_mass_coeff),
+  //     a.position + av,
+  //     b.position - lamb.scale(b_mass_coeff),
+  //     b.position + bv
+  //   )
+  //   // a.last_position = a.position + av;
+  //   // a.position = a.position + lamb.scale(a_mass_coeff);
+  //   //
+  //   // b.last_position = b.position + bv;
+  //   // b.position = b.position - lamb.scale(b_mass_coeff);
+  // }
 
   // pub fn test2(a: &Particle, b: &Particle) -> Option<f32> {
   // }
 
   #[inline]
   pub fn test2(a: &Particle, b: &Particle) -> bool {
+    // (a.radius + b.radius) > a.position.dist(b.position)
     (a.radius + b.radius) * (a.radius + b.radius) > a.position.dist2(b.position)
   }
 
   #[inline]
   pub fn solve2(a: &Particle, b: &Particle) -> (V2, V2, f32, f32) {
     let diff = a.position - b.position;
-    let ingress_ep = diff.mag();
-    let pqt = ((a.radius + b.radius) / (ingress_ep + EPSILON)) - 1.0f32;
+    let ingress_ep = a.position.dist(b.position) + EPSILON;
+    // Decrease ingress a little to increase the power of the spring a little.
+    let pqt = ((((a.radius + b.radius) / (ingress_ep)) - 1.0f32).min(1.0) / (ingress_ep));
+    // let pqt = (a.radius + b.radius - 0.1 - ingress_ep) / (ingress_ep) * 0.5;
     let ingress = (a.radius + b.radius - ingress_ep) / (a.radius + b.radius);
 
     (
+      // diff.scale(pqt),
+      // diff.scale(-pqt),
       diff.scale(b.mass / (a.mass + b.mass) * pqt),
       diff.scale(-a.mass / (a.mass + b.mass) * pqt),
       ingress * b.mass / (a.mass + b.mass),
@@ -116,74 +121,21 @@ impl Collision {
   }
 
   #[inline]
-  pub fn test_solve(a: &Particle, b: &Particle,
-    // a_index: usize, b_index: usize
-  ) -> Option<(V2, V2, f32)> {
-    // let pos_diff = a.position - b.position;
-    // (ax - bx) * (ax - bx) + (ay - by) * (ay - by)
-    // ax * ax - 2 * bx * ax + bx * bx + ay * ay - 2 * by * ay + by * by
-    // ax ^ 2 + ay ^ 2 + bx ^ 2 + by ^ 2 - 2 * ax * bx - 2 * ay * by
-    // ax ^ 2 + ay ^ 2 + bx ^ 2 + by ^ 2 - 2 * (ax * bx + ay * by)
-    // let ingress_sq = a.position_pre_calc + b.position_pre_calc - a.position_double.x * b.position.x - a.position_double.y * b.position.y;
-    // let ingress_sq = (a.position - b.position).mag2();
-    // let abr = a.radius + b.radius;
-    // let radius_sq = (a.radius + b.radius) * (a.radius + b.radius);
-    // let true_ingress = (a.radius + b.radius) * (a.radius + b.radius) - ingress_sq;
-    // let true_ingress = a.radius2 + b.radius2 - ingress_sq;
+  pub fn test_solve(a: &Particle, b: &Particle) -> Option<(V2, V2, f32)> {
     if (a.radius + b.radius) * (a.radius + b.radius) - (a.position - b.position).mag2() > 0.0 {
-    // if a.radius2 + b.radius2 > ingress_sq {
-    // if a.pressure_radius2 + b.pressure_radius2 > ingress_sq {
-      // let a = self.a.unwrap();
-      // let b = self.b.unwrap();
-      // let pos_diff = a.position - b.position;
       let pos_diff = a.position - b.position;
       let ingress_sq = (a.position - b.position).mag2();
       let ingress = ingress_sq.sqrt() + EPSILON + (a.radius + b.radius) / 50.0;
-      // let factor = a.factor * b.factor;
       let pqt = (((a.radius + b.radius) / ingress).powf(1.5) - 1.0f32);
-      // let pqt = (radius_sq / ingress_sq - 1.0f32);
-      // let pqt = (a.radius + b.radius - ingress);
-      // let pqt = true_ingress.sqrt() + EPSILON;
-      // let pqt = ((a.pressure_radius + b.pressure_radius) / ingress - 1f32) * factor;
-      // let lamb = pos_diff.scale(pqt);
-      // let lamb = pos_diff.div_scale(pqt);
       let total_mass = (a.mass + b.mass) / pqt;
-      // (am + bm) * 1 / ((ar + br) / i - 1) * 0.25
-      //             1 / (ar + br - 1 / i) * 1 / i
-      // (am + bm) * (1 / ar + 1 / br + -i) * 1 / i
-      // (am / ar + bm / ar + am / br + bm / br - am * i - bm * i) / i
-      // (amr + bmr + bm / ar + am / br - (am + bm) * i) / i
       let a_mass_coeff = b.mass / total_mass;
       let b_mass_coeff = a.mass / total_mass;
-      // let total_mass = a.pressure_mass + b.pressure_mass;
-      // let a_mass_coeff = b.pressure_mass / total_mass;
-      // let b_mass_coeff = a.pressure_mass / total_mass;
-      // let friction = 1.0 - a.friction * b.friction;
-      // let av = (a.last_position - a.position).scale(friction);
-      // let bv = (b.last_position - b.position).scale(friction);
-      // let av = a.velocity.scale(friction);
-      // let bv = b.velocity.scale(friction);
-      // let av = a.velocity;
-      // let bv = b.velocity;
-
-      // ax * amc
-      // ax * (am / (am + bm) * 1 / pqt)
-      // ax * (1 / pqt) * (am / tm)
-      // ax * (am / (tm * pqt))
-      // ax * amc, ay * amc
-
-      // let lamb = pos_diff.div_scale();
 
       Some((
         pos_diff.scale(a_mass_coeff),
-        // a.position + av,
         pos_diff.scale(-b_mass_coeff),
-        // b.position + bv,
         ingress_sq
       ))
-      // Some(Collision {
-      //   // a_ddvt_index: a_index, b_ddvt_index: b_index,
-      //   ingress: ingress, pqt: 0f32 })
     } else {
       None
     }

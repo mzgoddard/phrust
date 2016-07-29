@@ -8,6 +8,12 @@ use std::f32::consts;
 use std::ptr;
 // use std::boxed::FnBox;
 
+use std::mem;
+// use std::marker::Reflect;
+// use std::raw::TraitObject;
+use std::any::Any;
+use std::ops::{Deref, DerefMut};
+use std::borrow::{Borrow, BorrowMut};
 use std::thread;
 use std::sync::{Mutex, Arc};
 use std::sync::mpsc::{SyncSender, Sender, Receiver, sync_channel, channel};
@@ -29,6 +35,7 @@ struct Positions {
 
 #[derive(Clone, Default)]
 struct Triggers {
+  used: bool,
   triggered: Vec<usize>,
 }
 
@@ -36,9 +43,11 @@ struct Triggers {
 pub struct World {
   pub dt: f32,
   pub dt2: f32,
-  bb: BB,
+  pub bb: BB,
   pub gravity: V2,
 
+  changes: Vec<WorldChange>,
+  effects: Vec<Box<WorldEffect>>,
   particles: Vec<Particle>,
   triggered: Vec<Vec<usize>>,
   free_particles: Vec<usize>,
@@ -49,10 +58,101 @@ pub struct World {
   pool: Option<WorldPool>,
 }
 
+enum WorldChange {
+  AddParticle(Particle),
+  RemoveParticle(usize),
+  AddEffect(Box<WorldEffect + Sized + 'static>),
+  RemoveEffect(*mut WorldEffect),
+}
+
 pub struct WorldEditor<'a> {
   world: &'a mut World,
   world_evil: *mut World,
+  // changes: Vec<WorldChange>,
 }
+
+pub struct WorldEffectBox<T : ?Sized> where T : WorldEffect {
+  world_ptr: *mut World,
+  effect: Box<T>,
+}
+
+pub struct WorldEffectRef {
+  ptr: *mut WorldEffect,
+}
+
+impl WorldEffectRef {
+  pub fn as_mut<'a>(&'a mut self, world: &'a mut World) -> &'a mut WorldEffect {
+    unsafe { mem::transmute(self.ptr) }
+  }
+
+  pub fn as_downcast_mut<'a, T>(&'a mut self, world: &'a mut World) -> Option<&'a mut T> where T : Any {
+    self.as_mut(world).as_any().downcast_mut::<T>()
+  }
+}
+
+// impl WorldEffectRef {
+//   fn new<WE : 'static>(effect: &mut WE) -> WorldEffectRef where WE : WorldEffect {
+//     WorldEffectRef {
+//       ptr: unsafe { &mut *effect as *mut WorldEffect },
+//     }
+//   }
+// }
+//
+// impl<'a, WE> From<&'a mut WE> for WorldEffectRef where WE : WorldEffect + 'a {
+//   fn from(effect: &'a mut WE) -> WorldEffectRef {
+//     WorldEffectRef::new(effect)
+//   }
+// }
+
+// pub trait WorldEffectMethods {
+//   fn add_to_world(&mut self, editor: &WorldEditor);
+//   fn remove_from_world(&mut self, editor: &WorldEditor);
+//   fn apply(&mut self, editor: &WorldEditor);
+// }
+
+pub trait AsAny : Any {
+  fn as_any(&mut self) -> &mut Any;
+}
+
+pub trait WorldEffect : AsAny {
+  fn add_to_world(&mut self, editor: &WorldEditor);
+  fn remove_from_world(&mut self, editor: &WorldEditor);
+  fn apply(&mut self, editor: &WorldEditor);
+  // fn as_any(&mut self) -> &mut Any;
+  // fn as_any(&mut self) -> &mut Any {
+  //   &mut *self as &mut Any
+  // }
+}
+
+impl<T> AsAny for T where T : Any {
+  fn as_any(&mut self) -> &mut Any {
+    self as &mut Any
+  }
+}
+
+// impl<T> T where T : WorldEffect {
+//   fn as_any(&mut self) -> &mut Any {
+//     self as &mut Any
+//   }
+// }
+
+// impl<T> WorldEffect for T where T : Any {}
+
+// pub trait ToWorldEffectRef where Self : WorldEffect + Sized + 'static {
+//   fn as_world_effect_ref(&mut self) -> WorldEffectRef {
+//     WorldEffectRef {
+//       ptr: unsafe { &mut *self as *mut WorldEffect },
+//     }
+//   }
+// }
+
+// impl<T: WorldEffect + Sized + 'static> <T> {
+//   fn as_world_effect_ref(&mut self) -> WorldEffectRef {
+//     WorldEffectRef {
+//       ptr: unsafe { &mut *self as *mut WorldEffect },
+//     }
+//   }
+// }
 
 enum WorldJob {
   Particles(Box<ParticleJob>),
@@ -99,6 +199,7 @@ impl Positions {
 
   #[inline]
   fn merge(&mut self, other: &Positions) {
+    // let first_solution = self.solutions == 0.0;
     self.solutions = self.solutions + other.solutions;
     self.ingress = self.ingress + other.ingress;
     self.position = self.position + other.position;
@@ -120,10 +221,12 @@ impl Triggers {
   }
 
   fn add_trigger(&mut self, id: usize) {
+    self.used = true;
     self.triggered.push(id);
   }
 
   fn merge(&mut self, other: &Triggers) {
+    self.used = true;
     for &id in other.triggered.iter() {
       if let Err(index) = self.triggered.binary_search(&id) {
         self.triggered.insert(index, id);
@@ -136,6 +239,7 @@ impl Triggers {
   }
 
   fn clear(&mut self) {
+    self.used = false;
     self.triggered.clear();
   }
 }
@@ -169,23 +273,98 @@ impl<'a> WorldEditor<'a> {
     WorldEditor {
       world: world,
       world_evil: world_evil,
+      // changes: Vec::<WorldChange>::new(),
     }
   }
 
+  pub fn add_particle(&self, particle: &mut Particle) {
+    unsafe { &mut *self.world_evil }.add_particle(particle);
+  }
+
   pub fn remove_particle(&self, particle: &mut Particle) {
+    // unsafe { self.changes }
+    // unsafe { &mut *(&mut (*self) as *mut WorldEditor) as &mut WorldEditor }.changes.push(WorldChange::RemoveParticle(particle.id));
     unsafe { &mut *self.world_evil }.remove_particle(particle);
   }
 
-  pub fn iter_triggered(&self, trigger: usize) -> MapParticles<slice::Iter<usize>> {
+  pub fn iter_effects(&self) -> slice::IterMut<Box<WorldEffect>> {
+    unsafe { &mut *self.world_evil }.iter_effects()
+  }
+
+  pub fn iter_triggered(&self, trigger: usize) -> iter::Filter<MapParticles<'a, slice::Iter<usize>>, fn(&&mut Particle) -> bool> {
     unsafe { &mut *self.world_evil }.iter_triggered(trigger)
   }
 }
+
+// impl<'a> Drop for WorldEditor<'a> {
+//   fn drop(&mut self) {
+//     for effect_ptr in self.remove_effects.split_off(0).into_iter() {
+//       unsafe { &mut *self.world_evil }.remove_effect(unsafe { &mut *effect_ptr })
+//     }
+//       match change {
+//         WorldChange::AddParticle(mut particle) => {
+//           unsafe { &mut *self.world_evil }.add_particle(&mut particle);
+//         },
+//         WorldChange::RemoveParticle(id) => {
+//           unsafe { &mut *self.world_evil }.remove_particle(&mut Particle {
+//             id: id,
+//             .. Default::default()
+//           });
+//         },
+//         WorldChange::AddEffect(effect) => {
+//           unsafe { &mut *self.world_evil }.add_effect(effect);
+//         },
+//         WorldChange::RemoveEffect(effect_ptr) => {
+//           unsafe { &mut *self.world_evil }.remove_effect(unsafe { &mut *effect_ptr });
+//         },
+//       }
+//     }
+//   }
+// }
+
+// impl<T> WorldEffectBox<T> where T : WorldEffect {
+//   fn new(world: &mut World, effect: Box<T>) -> WorldEffectBox<T> {
+//     WorldEffectBox {
+//       world_ptr: &mut *world as *mut World,
+//       effect: effect,
+//     }
+//   }
+//   //
+//   // fn remove(&mut self) {
+//   //   unsafe { &mut *self.world_ptr }.remove_effect(&*self.effect as *const WorldEffect);
+//   // }
+// }
+//
+// impl<T> Deref for WorldEffectBox<T> where T : WorldEffect {
+//   type Target = T;
+//   fn deref(&self) -> &T {
+//     self.effect.deref()
+//   }
+// }
+//
+// impl<T> DerefMut for WorldEffectBox<T> where T : WorldEffect {
+//   fn deref_mut(&mut self) -> &mut T {
+//     self.effect.deref_mut()
+//   }
+// }
+//
+// impl<T> Borrow<T> for WorldEffectBox<T> where T : WorldEffect {
+//   fn borrow(&self) -> &T {
+//     self.effect.borrow()
+//   }
+// }
+//
+// impl<T> BorrowMut<T> for WorldEffectBox<T> where T : WorldEffect {
+//   fn borrow_mut(&mut self) -> &mut T {
+//     self.effect.borrow_mut()
+//   }
+// }
 
 impl World {
   pub fn new(bb: BB) -> World {
     World {
       bb: bb,
-      volume_tree: VolumeRoot::new(bb),
+      volume_tree: VolumeRoot::new(bb!(-2621440, -2621440, 2621440, 2621440)),
       pool: Some(WorldPool::new()),
       .. Default::default()
     }
@@ -197,16 +376,23 @@ impl World {
 
   pub fn add_particle(&mut self, particle: &mut Particle) {
     let id = if let Some(freeid) = self.free_particles.pop() {
+      assert!(self.particles[freeid].is_dead());
       freeid
     }
     else {
       self.particles.len()
     };
     particle.id = id;
-    self.particles.push(*particle);
-    self.triggered.push(Default::default());
-    self.solve_positions.push(Default::default());
-    self.solve_triggered.push(Default::default());
+    if particle.last_position.x == f32::INFINITY {
+      particle.last_position = particle.position;
+    }
+    while id >= self.particles.len() {
+      self.particles.push(Default::default());
+      self.triggered.push(Default::default());
+      self.solve_positions.push(Default::default());
+      self.solve_triggered.push(Default::default());
+    }
+    self.particles[particle.id] = *particle;
     self.volume_tree.add(particle.id);
   }
 
@@ -228,6 +414,42 @@ impl World {
     self.particles[particle.id] = *particle;
   }
 
+  pub fn add_effect<WE>(&mut self, effect: WE) -> WorldEffectRef where WE : WorldEffect {
+    let mut effect_box = Box::new(effect);
+    {
+      let mut editor = self.edit();
+      effect_box.add_to_world(&mut editor);
+    }
+    let effect_ref = WorldEffectRef {
+      ptr: &mut *effect_box as *mut WorldEffect,
+    };
+    self.effects.push(effect_box);
+    effect_ref
+  }
+
+  pub fn borrow_effect_mut<'a>(&'a mut self, effect: &'a mut WorldEffectRef) -> &'a mut WorldEffect {
+    effect.as_mut(self)
+  }
+
+  pub fn remove_effect(&mut self, effect: WorldEffectRef) {
+    self.changes.push(WorldChange::RemoveEffect(effect.ptr));
+  }
+
+  fn _remove_effect(&mut self, effect: &mut WorldEffect) {
+    if let Some(index) = self.effects.iter().position(|e| &*e.as_ref() as *const WorldEffect == &*effect as *const WorldEffect) {
+      let mut removed_effect = self.effects.swap_remove(index);
+      let mut editor = self.edit();
+      removed_effect.remove_from_world(&mut editor);
+    }
+    else {
+      panic!("Couldn't find exising effect to remove it");
+    }
+  }
+
+  pub fn iter_effects(&mut self) -> slice::IterMut<Box<WorldEffect>> {
+    self.effects.iter_mut()
+  }
+
   pub fn iter_particles(&self) -> iter::Filter<slice::Iter<Particle>, fn(&&Particle) -> bool> {
     fn removed(particle: &&Particle) -> bool {
       !particle.is_dead()
@@ -235,10 +457,15 @@ impl World {
     self.particles.iter().filter(removed)
   }
 
-  pub fn iter_triggered<'a>(&mut self, trigger: usize) -> MapParticles<'a, slice::Iter<usize>> {
+  pub fn iter_triggered<'a>(&mut self, trigger: usize) -> iter::Filter<MapParticles<'a, slice::Iter<usize>>, fn(&&mut Particle) -> bool> {
     let evil_self = unsafe { &mut *(self as *mut World) as &mut World };
     let evil_world = unsafe { &mut *(self as *mut World) as &mut World };
-    evil_self.triggered[trigger].iter().map_particles(&mut evil_world.particles)
+    fn is_not_dead(particle: &&mut Particle) -> bool {
+      !particle.is_dead()
+    }
+    evil_self.triggered[trigger].iter()
+    .map_particles(&mut evil_world.particles)
+    .filter(is_not_dead)
   }
 
   pub fn walk_triggered<F>(&mut self, trigger: &mut Particle, mut handle: F) where F : FnMut(&mut World, &mut Particle, &mut Particle) {
@@ -250,6 +477,8 @@ impl World {
   }
 
   pub fn step(&mut self) {
+    self.apply_effects();
+
     self.integrate_particles();
 
     self.volume_tree.update(&mut self.particles);
@@ -292,31 +521,30 @@ impl World {
         }
 
         pool.solutions(&mut |positions, triggers| {
-          let mut i : isize = 0;
-          let l : isize = positions.len() as isize;
-          let p = positions.as_mut_ptr();
-          let pt = triggers.as_mut_ptr();
-          let s = self.solve_positions.as_mut_ptr();
-          let t = self.solve_triggered.as_mut_ptr();
-          while i < l {
-          // for (position, total) in positions.iter_mut().zip(self.solve_positions.iter_mut()) {
-            let position = unsafe { &mut *p.offset(i) as &mut Positions };
-            let triggers = unsafe { &mut *pt.offset(i) as &mut Triggers };
-            if triggers.len() > 0 {
-              unsafe { &mut *t.offset(i) as &mut Triggers }.merge(triggers);
-              triggers.clear();
-            }
-            else if position.solutions > 0.0 {
-              unsafe { &mut *s.offset(i) as &mut Positions }.merge(position);
-              position.clear();
-            }
-            i += 1;
-          }
+          World::merge_solutions(self.solve_positions.as_mut_ptr(), self.solve_triggered.as_mut_ptr(), positions, triggers);
         });
       }
 
       // println!("iter solutions");
       self.apply_solutions();
+    }
+  }
+
+  fn apply_effects(&mut self) {
+    {
+      let mut editor = self.edit();
+      for effect in editor.iter_effects() {
+        effect.apply(&editor);
+      }
+    }
+
+    for change in self.changes.split_off(0).into_iter() {
+      match change {
+        WorldChange::RemoveEffect(effect_ptr) => {
+          self._remove_effect(unsafe { &mut *effect_ptr });
+        },
+        _ => {},
+      }
     }
   }
 
@@ -424,15 +652,17 @@ impl World {
     let mut s = scratch.as_mut_ptr();
     let mut t = triggers.as_mut_ptr();
     while i < contained_len {
-      let a = unsafe { *p.offset(i as isize) };
-      let a_p = &a;
+      let a = unsafe { &*p.offset(i as isize) };
+      // let a_p = &mut a;
       let sa = unsafe { &mut *s.offset(i as isize) };
       j = i + 1;
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
-        if Collision::test2(a_p, b) {
-          let (ap, bp, ain, bin) = Collision::solve2(a_p, b);
+        if Collision::test2(a, b) {
+          let (ap, bp, ain, bin) = Collision::solve2(a, b);
           let sb = unsafe { &mut *s.offset(j as isize) };
+          // a.position = a.position + ap;
+          // b.position = b.position + bp;
           sa.add(ap, ain);
           sb.add(bp, bin);
         }
@@ -441,15 +671,17 @@ impl World {
       i += 1;
     }
     while i < triggers_start {
-      let a = unsafe { *p.offset(i as isize) };
-      let ap = &a;
+      let a = unsafe { &*p.offset(i as isize) };
+      // let ap = &a;
       let sa = unsafe { &mut *s.offset(i as isize) };
       j = i + 1;
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
-        if Collision::test2(ap, b) {
-          let (ap, bp, ain, bin) = Collision::solve2(ap, b);
+        if Collision::test2(a, b) {
+          let (ap, bp, ain, bin) = Collision::solve2(a, b);
           let sb = unsafe { &mut *s.offset(j as isize) };
+          // a.position = a.position + ap.scale(0.5);
+          // b.position = b.position + bp.scale(0.5);
           sa.add_half(ap, ain);
           sb.add_half(bp, bin);
         }
@@ -490,6 +722,31 @@ impl World {
     }
   }
 
+  fn merge_solutions(s: *mut Positions, t: *mut Triggers, positions: &mut Vec<Positions>, triggers: &mut Vec<Triggers>) {
+    let mut i : isize = 0;
+    let l : isize = positions.len() as isize;
+    let p = positions.as_mut_ptr();
+    let pt = triggers.as_mut_ptr();
+    // let s = solve_positions.as_mut_ptr();
+    // let t = solve_triggered.as_mut_ptr();
+    while i < l {
+    // for (position, total) in positions.iter_mut().zip(self.solve_positions.iter_mut()) {
+      let position = unsafe { &mut *p.offset(i) as &mut Positions };
+      if position.solutions > 0.0 {
+        unsafe { &mut *s.offset(i) as &mut Positions }.merge(position);
+        position.clear();
+      }
+      else {
+        let triggers = unsafe { &mut *pt.offset(i) as &mut Triggers };
+        if triggers.used {
+          unsafe { &mut *t.offset(i) as &mut Triggers }.merge(triggers);
+          triggers.clear();
+        }
+      }
+      i += 1;
+    }
+  }
+
   fn apply_solutions(&mut self) {
     let mut i = 0;
     let l = self.solve_positions.len();
@@ -519,7 +776,7 @@ impl World {
                     (particle.last_position - particle.position)
                       .scale_add(
                         // 0.9999,
-                        1.0 - 0.0001 * solutions,
+                        1.0 - particle.friction2 * solutions,
                         particle.position
                       )
                   )
@@ -532,15 +789,24 @@ impl World {
                 (particle.last_position - particle.position)
                   .scale_add(
                     // 0.9999,
-                    1.0 - 0.0001 * solutions,
+                    1.0 - particle.friction2 * solutions,
                     particle.position
                   )
               );
           }
+          // particle.last_position =
+          //   particle.last_position - positions.position;
           particle.position =
+            // positions.position + particle.position;
+            // particle.position.scale_add(solutions, positions.position).scale(inv_solutions);
+            // particle.position + positions.position.project(particle.acceleration);
+            // particle.position + positions.position;
             positions.position.scale_add(inv_solutions, particle.position);
           particle.acceleration = V2::zero();
           positions.clear();
+        }
+        else {
+          particle.acceleration = V2::zero();
         }
       }
       else if particle.is_trigger() {
@@ -595,7 +861,7 @@ impl WorldPool {
           // };
           let job  = job_rx.recv().unwrap();
           match job {
-            WorldJob::Particles(particles) => {
+            WorldJob::Particles(mut particles) => {
               // println!("rx particles job");
               if let (Some(solutions), Some(triggers)) = (maybe_solutions.as_mut(), maybe_triggers.as_mut()) {
                 while solutions.len() < particles.max {
@@ -604,7 +870,10 @@ impl WorldPool {
                 while triggers.len() < particles.max {
                   triggers.push(Default::default());
                 }
-                World::test_solve_particles(&particles.particles, particles.len, particles.contained, particles.triggers, solutions, &mut scratch, triggers);
+                let len = particles.len;
+                let contained = particles.contained;
+                let triggers_len = particles.triggers;
+                World::test_solve_particles(&particles.particles, len, contained, triggers_len, solutions, &mut scratch, triggers);
                 particles_tx.send(particles);
               }
             },
