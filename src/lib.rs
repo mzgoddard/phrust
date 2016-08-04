@@ -8,6 +8,7 @@ pub mod collision;
 mod ddvt;
 mod ddvt_bench;
 mod quad_tree;
+mod pool;
 pub mod demo;
 pub mod world;
 pub mod world_renderer;

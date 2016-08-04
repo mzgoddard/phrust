@@ -11,8 +11,7 @@ use std::mem;
 // use std::marker::Reflect;
 // use std::raw::TraitObject;
 use std::any::Any;
-use std::thread;
-use std::sync::mpsc::{Sender, Receiver, channel};
+use std::sync::mpsc::*;
 
 use super::math::*;
 
@@ -20,6 +19,8 @@ use super::particle;
 use super::particle::Particle;
 use super::collision::Collision;
 use super::ddvt::VolumeRoot;
+
+use super::pool::{Consumer, ConsumerPool};
 
 #[derive(Clone, Copy, Default)]
 struct Positions {
@@ -147,7 +148,6 @@ const PARTICLES_PER_JOB : usize = 4096;
 enum WorldJob {
   Particles(Box<ParticleJob>),
   Integrate(Box<IntegrateJob>),
-  IntegrateDone,
   Merge(Box<MergeJob>),
   Apply(Box<ApplyJob>),
   TakeAnswers((Vec<Positions>, Vec<Triggers>)),
@@ -156,6 +156,24 @@ enum WorldJob {
 }
 
 impl WorldJob {
+  fn unwrap_particles(self) -> Box<ParticleJob> {
+    if let WorldJob::Particles(job) = self {
+      job
+    }
+    else {
+      panic!("Must be ParticleJob to unwrap_merge")
+    }
+  }
+
+  fn unwrap_integrate(self) -> Box<IntegrateJob> {
+    if let WorldJob::Integrate(job) = self {
+      job
+    }
+    else {
+      panic!("Must be IntegrateJob to unwrap_merge")
+    }
+  }
+
   fn unwrap_merge(self) -> Box<MergeJob> {
     if let WorldJob::Merge(job) = self {
       job
@@ -173,6 +191,15 @@ impl WorldJob {
       panic!("Must be ApplyJob to unwrap_apply")
     }
   }
+
+  fn unwrap_answers(self) -> (Vec<Positions>, Vec<Triggers>) {
+    if let WorldJob::TakeAnswers(answers) = self {
+      answers
+    }
+    else {
+      panic!("Must be ApplyJob to unwrap_apply")
+    }
+  }
 }
 
 impl Clone for WorldJob {
@@ -180,9 +207,6 @@ impl Clone for WorldJob {
     match self {
       &WorldJob::ShowAnswers => {
         WorldJob::ShowAnswers
-      },
-      &WorldJob::IntegrateDone => {
-        WorldJob::IntegrateDone
       },
       &WorldJob::ShutDown => {
         WorldJob::ShutDown
@@ -247,24 +271,16 @@ unsafe impl Send for ApplyJob {}
 
 struct WorldPool {
   threads: usize,
+  particles_out: usize,
+  integrates_out: usize,
   particle_jobs: Vec<Box<ParticleJob>>,
   integrate_jobs: Vec<Box<IntegrateJob>>,
   merge_jobs: Vec<Box<MergeJob>>,
   apply_jobs: Vec<Box<ApplyJob>>,
   positions: Vec<(Vec<Positions>, Vec<Triggers>)>,
 
-  next_thread: usize,
-  maybe_solutions: Option<Vec<Positions>>,
-  maybe_triggers: Option<Vec<Triggers>>,
-  main_jobs: Vec<WorldJob>,
-  job_txs: Vec<Sender<WorldJob>>,
-  particles_rx: Receiver<Box<ParticleJob>>,
-  integrate_tx: Sender<Box<IntegrateJob>>,
-  integrate_rx: Receiver<Box<IntegrateJob>>,
-  result_tx: Sender<WorldJob>,
   result_rx: Receiver<WorldJob>,
-  positions_tx: Sender<(Vec<Positions>, Vec<Triggers>)>,
-  positions_rx: Receiver<(Vec<Positions>, Vec<Triggers>)>,
+  pool: ConsumerPool<WorldJob, WorldJob>,
 }
 
 impl Positions {
@@ -957,116 +973,83 @@ impl World {
 // }
 
 impl WorldPool {
-  fn new() -> WorldPool {
-    let mut job_txs = Vec::<Sender<WorldJob>>::new();
-    let (particles_tx, particles_rx) = channel();
-    let (integrate_tx, integrate_rx) = channel();
+  fn new() -> WorldPool {;
     let (result_tx, result_rx) = channel();
-    let (positions_tx, positions_rx) = channel();
 
     let threads = num_cpus::get();
     // let threads = 1;
     println!("WorldPool using {} threads.", threads);
 
-    {
-      let (job_tx, _) = channel();
-      job_txs.push(job_tx);
-    }
+    let pool = ConsumerPool::new(result_tx.clone(), || {
+      let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
+      let mut maybe_triggers = Some(Vec::<Triggers>::new());
+      let mut particle_copies = [Particle { .. Default::default() }; 256];
+      let mut scratch = [Positions { .. Default::default() }; 256];
 
-    for _ in 1..threads {
-      let (job_tx, job_rx) = channel();
-      job_txs.push(job_tx);
-      let particles_tx = particles_tx.clone();
-      let integrate_tx = integrate_tx.clone();
-      let result_tx = result_tx.clone();
-      let positions_tx = positions_tx.clone();
-      thread::Builder::new().name("World thread".to_string()).spawn(move || {
-        let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
-        let mut maybe_triggers = Some(Vec::<Triggers>::new());
-        let mut particle_copies = [Particle { .. Default::default() }; 256];
-        let mut scratch = [Positions { .. Default::default() }; 256];
-        loop {
-          let job  = job_rx.recv().unwrap();
-          match job {
-            WorldJob::Particles(mut particles) => {
-              if let (Some(solutions), Some(triggers)) = (maybe_solutions.as_mut(), maybe_triggers.as_mut()) {
-                World::_test_solve_particles(&mut *particles, &mut particle_copies, solutions, &mut scratch, triggers);
-                particles_tx.send(particles).unwrap();
-              }
-            },
+      Consumer::new(move |job| {
+        match job {
+          WorldJob::Particles(mut particles) => {
+            if let (Some(solutions), Some(triggers)) = (maybe_solutions.as_mut(), maybe_triggers.as_mut()) {
+              World::_test_solve_particles(&mut *particles, &mut particle_copies, solutions, &mut scratch, triggers);
+            }
+            Some(WorldJob::Particles(particles))
+          },
 
-            WorldJob::Integrate(mut integrate) => {
-              World::_integrate_particles(&mut *integrate);
-              integrate_tx.send(integrate).unwrap();
-            },
-            WorldJob::IntegrateDone => {
-              result_tx.send(WorldJob::IntegrateDone).unwrap();
-            },
+          WorldJob::Integrate(mut integrate) => {
+            World::_integrate_particles(&mut *integrate);
+            Some(WorldJob::Integrate(integrate))
+          },
 
-            WorldJob::Merge(mut merge) => {
-              World::_merge_answers(&mut *merge);
-              result_tx.send(WorldJob::Merge(merge)).unwrap();
-            },
+          WorldJob::Merge(mut merge) => {
+            World::_merge_answers(&mut *merge);
+            Some(WorldJob::Merge(merge))
+          },
 
-            WorldJob::Apply(mut apply) => {
-              World::apply_answers(&mut *apply);
-              result_tx.send(WorldJob::Apply(apply)).unwrap();
-            },
+          WorldJob::Apply(mut apply) => {
+            World::apply_answers(&mut *apply);
+            Some(WorldJob::Apply(apply))
+          },
 
-            WorldJob::TakeAnswers((solutions, triggers)) => {
-              maybe_solutions = Some(solutions);
-              maybe_triggers = Some(triggers);
-            },
+          WorldJob::TakeAnswers((solutions, triggers)) => {
+            maybe_solutions = Some(solutions);
+            maybe_triggers = Some(triggers);
+            None
+          },
 
-            WorldJob::ShowAnswers => {
-              positions_tx.send((
-                maybe_solutions.take().unwrap(),
-                maybe_triggers.take().unwrap(),
-              )).unwrap();
-              // let (solutions, triggers) = positions_tx_rx.recv().unwrap();
-              // maybe_solutions = Some(solutions);
-              // maybe_triggers = Some(triggers);
-            },
+          WorldJob::ShowAnswers => {
+            Some(WorldJob::TakeAnswers((
+              maybe_solutions.take().unwrap(),
+              maybe_triggers.take().unwrap(),
+            )))
+          },
 
-            WorldJob::ShutDown => {
-              break;
-            },
-          }
+          WorldJob::ShutDown => {
+            None
+          },
         }
-      }).unwrap();
-    }
+      })
+    });
 
     WorldPool {
       threads: threads,
-      particle_jobs: Vec::<Box<ParticleJob>>::new(),
+      particles_out: 0,
+      integrates_out: 0,
+      particle_jobs: Vec::new(),
       integrate_jobs: Vec::new(),
       merge_jobs: Vec::new(),
       apply_jobs: Vec::new(),
-      positions: Vec::<(Vec<Positions>, Vec<Triggers>)>::new(),
-      next_thread: 0,
-      maybe_solutions: Some(Vec::new()),
-      maybe_triggers: Some(Vec::new()),
-      main_jobs: Vec::new(),
-      job_txs: job_txs,
-      particles_rx: particles_rx,
-      integrate_tx: integrate_tx,
-      integrate_rx: integrate_rx,
-      result_tx: result_tx,
+      positions: Vec::new(),
+
       result_rx: result_rx,
-      positions_tx: positions_tx,
-      positions_rx: positions_rx,
+      pool: pool,
     }
   }
 
   fn job(&mut self) -> Box<ParticleJob> {
-    if let Ok(particles) = self.particles_rx.try_recv() {
-      particles
-    }
-    else if let Some(particles) = self.particle_jobs.pop() {
+    if let Some(particles) = self.particle_jobs.pop() {
       particles
     }
     else {
-      // Box::new(Default::default())
       Box::new(ParticleJob {
         max: 0,
         contained: ptr::null(),
@@ -1079,10 +1062,7 @@ impl WorldPool {
   }
 
   fn integrate_job(&mut self) -> Box<IntegrateJob> {
-    if let Ok(integrate) = self.integrate_rx.try_recv() {
-      integrate
-    }
-    else if let Some(integrate) = self.integrate_jobs.pop() {
+    if let Some(integrate) = self.integrate_jobs.pop() {
       integrate
     }
     else {
@@ -1133,42 +1113,22 @@ impl WorldPool {
   }
 
   fn _send(&mut self, job: WorldJob) {
-    if self.next_thread == 0 {
-      self.main_jobs.push(job);
-    }
-    else {
-      let job_tx = &mut self.job_txs[self.next_thread];
-      job_tx.send(job).unwrap();
-    }
-    self.next_thread = self.next_thread + 1;
-    if self.next_thread >= self.threads {
-      self.next_thread = 0;
-    }
+    self.pool.send(job).unwrap();
   }
 
   fn _send_all(&mut self, job: WorldJob) {
-    match job {
-      WorldJob::ShowAnswers => {
-        self.positions_tx.send((
-          self.maybe_solutions.take().unwrap(),
-          self.maybe_triggers.take().unwrap()
-        )).unwrap();
-      },
-      WorldJob::IntegrateDone => {
-        self.result_tx.send(WorldJob::IntegrateDone).unwrap();
-      },
-      _ => {},
-    }
-    for i in 1..self.threads {
-      self.job_txs[i].send(job.clone()).unwrap();
+    for _ in 0..self.threads {
+      self.pool.send(job.clone()).unwrap();
     }
   }
 
   fn send(&mut self, job: Box<ParticleJob>) {
+    self.particles_out += 1;
     self._send(WorldJob::Particles(job));
   }
 
   fn send_integrate(&mut self, job: Box<IntegrateJob>) {
+    self.integrates_out += 1;
     self._send(WorldJob::Integrate(job));
   }
 
@@ -1181,51 +1141,36 @@ impl WorldPool {
   }
 
   fn wait_on_integrate(&mut self) {
-    while self.main_jobs.len() > 0 {
-      match self.main_jobs.pop().unwrap() {
-        WorldJob::Integrate(mut integrate) => {
-          World::_integrate_particles(&mut *integrate);
-          self.integrate_tx.send(integrate).unwrap();
-        },
-        _ => {},
-      }
-    }
+    self.pool.process_main();
 
-    self._send_all(WorldJob::IntegrateDone);
-    for _ in 0..self.threads {
-      self.result_rx.recv().unwrap();
+    while self.integrates_out > 0 {
+      self.integrates_out -= 1;
+      self.integrate_jobs.push(self.result_rx.recv().unwrap().unwrap_integrate());
     }
   }
 
   fn apply_solutions(&mut self, dt2: f32, particles: &mut Vec<Particle>, triggered: &mut Vec<Vec<usize>>) {
-    if let (&mut Some(ref mut solutions), &mut Some(ref mut triggers)) = (&mut self.maybe_solutions, &mut self.maybe_triggers) {
-      while solutions.len() < particles.len() {
-        solutions.push(Default::default());
-      }
-      while triggers.len() < particles.len() {
-        triggers.push(Default::default());
-      }
-      let mut particle_copies = [Default::default(); 256];
-      let mut scratch = [Default::default(); 256];
-      while self.main_jobs.len() > 0 {
-        match self.main_jobs.pop().unwrap() {
-          WorldJob::Particles(mut particles) => {
-            World::_test_solve_particles(&mut *particles, &mut particle_copies, solutions, &mut scratch, triggers);
-            self.particle_jobs.push(particles);
-          },
-          _ => {
-          },
-        }
-      }
+    // if let (&mut Some(ref mut solutions), &mut Some(ref mut triggers)) = (&mut self.maybe_solutions, &mut self.maybe_triggers) {
+    // }
+    self.pool.process_main();
+
+    while self.particles_out > 0 {
+      self.particles_out -= 1;
+      self.particle_jobs.push(self.result_rx.recv().unwrap().unwrap_particles());
     }
 
     self._send_all(WorldJob::ShowAnswers);
 
+    self.pool.process_main();
+
     {
-      let (mut solutions, mut triggers) = self.positions_rx.recv().unwrap();
+      let (mut solutions, mut triggers) = self.result_rx.recv().unwrap().unwrap_answers();
+      for _ in 0..(self.threads - 1) {
+        self.positions.push(self.result_rx.recv().unwrap().unwrap_answers());
+      }
       let mut jobs_out = 0;
       if self.threads >= 2 {
-        let (mut answer_positions, mut answer_triggers) = self.positions_rx.recv().unwrap();
+        let &mut(ref mut answer_positions, ref mut answer_triggers) = unsafe { &mut *(&mut self.positions[0] as *mut (Vec<Positions>, Vec<Triggers>)) };
         let mut j = 0;
         let len = answer_positions.len();
         while j < len {
@@ -1242,22 +1187,12 @@ impl WorldPool {
           j += PARTICLES_PER_JOB;
         }
         self.merge_jobs.clear();
-        self.positions.push((answer_positions, answer_triggers));
       }
 
-      while self.main_jobs.len() > 0 {
-        match self.main_jobs.pop().unwrap() {
-          WorldJob::Merge(mut merge) => {
-            World::_merge_answers(&mut *merge);
-            self.result_tx.send(WorldJob::Merge(merge)).unwrap();
-          },
-          _ => {
-          },
-        }
-      }
+      self.pool.process_main();
 
       for r in 1..(self.threads - 1) {
-        let (mut answer_positions, mut answer_triggers) = self.positions_rx.recv().unwrap();
+        let &mut(ref mut answer_positions, ref mut answer_triggers) = unsafe { &mut *(&mut self.positions[r] as *mut (Vec<Positions>, Vec<Triggers>)) };
         let mut jobs_in = 0;
         while self.merge_jobs.len() > 0 {
           let mut job = self.merge_jobs.pop().unwrap();
@@ -1279,18 +1214,8 @@ impl WorldPool {
             jobs_in += 1;
           }
         }
-        self.positions.push((answer_positions, answer_triggers));
 
-        while self.main_jobs.len() > 0 {
-          match self.main_jobs.pop().unwrap() {
-            WorldJob::Merge(mut merge) => {
-              World::_merge_answers(&mut *merge);
-              self.result_tx.send(WorldJob::Merge(merge)).unwrap();
-            },
-            _ => {
-            },
-          }
-        }
+        self.pool.process_main();
       }
       if self.threads >= 2 {
         let mut merge_jobs_in = 0;
@@ -1321,17 +1246,7 @@ impl WorldPool {
         }
         assert_eq!(merge_jobs_in, jobs_out);
 
-        while self.main_jobs.len() > 0 {
-          match self.main_jobs.pop().unwrap() {
-            WorldJob::Apply(mut apply) => {
-              World::apply_answers(&mut *apply);
-              self.apply_jobs.push(apply);
-              apply_jobs_in += 1;
-            },
-            _ => {
-            },
-          }
-        }
+        self.pool.process_main();
 
         while apply_jobs_in < jobs_out {
           let job = self.result_rx.recv().unwrap().unwrap_apply();
@@ -1360,17 +1275,7 @@ impl WorldPool {
 
         let mut jobs_in = 0;
 
-        while self.main_jobs.len() > 0 {
-          match self.main_jobs.pop().unwrap() {
-            WorldJob::Apply(mut apply) => {
-              World::apply_answers(&mut *apply);
-              self.apply_jobs.push(apply);
-              jobs_in += 1;
-            },
-            _ => {
-            },
-          }
-        }
+        self.pool.process_main();
 
         while jobs_in < jobs_out {
           let job = self.result_rx.recv().unwrap().unwrap_apply();
@@ -1379,18 +1284,14 @@ impl WorldPool {
         }
       }
 
-      // handle(&mut solutions, &mut triggers);
       self.positions.push((solutions, triggers));
     }
-    {
-      let (solutions, triggers) = self.positions.pop().unwrap();
-      self.maybe_solutions = Some(solutions);
-      self.maybe_triggers = Some(triggers);
-    }
-    for i in 1..self.threads {
+    for _ in 0..self.threads {
       let answers = self.positions.pop().unwrap();
-      self.job_txs[i].send(WorldJob::TakeAnswers(answers)).unwrap();
+      self.pool.send(WorldJob::TakeAnswers(answers)).unwrap();
     }
+
+    self.pool.process_main();
 
     // self._send_all(WorldJob::ShowAnswers);
     // {
@@ -1442,8 +1343,9 @@ impl WorldPool {
 
 impl Drop for WorldPool {
   fn drop(&mut self) {
-    for i in 1..self.threads {
-      self.job_txs[i].send(WorldJob::ShutDown).unwrap();
+    for _ in 0..self.threads {
+      self.pool.send(WorldJob::ShutDown).unwrap();
+      // self.consumers[i - 1].send(WorldJob::ShutDown).unwrap();
     }
   }
 }
