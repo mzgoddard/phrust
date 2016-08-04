@@ -16,10 +16,10 @@ pub struct BB {
 macro_rules! bb {
   ($l:expr, $b:expr, $r:expr, $t:expr) => { {
     BB {
-      l: $l as f32,
-      b: $b as f32,
-      r: $r as f32,
-      t: $t as f32,
+      l: ($l) as f32,
+      b: ($b) as f32,
+      r: ($r) as f32,
+      t: ($t) as f32,
     }
   } }
 }
@@ -50,6 +50,13 @@ impl BB {
 
   pub fn height(&self) -> f32 {
     self.t - self.b
+  }
+
+  pub fn center(&self) -> V2 {
+    V2 {
+      x: (self.l + self.r) / 2.0,
+      y: (self.b + self.t) / 2.0,
+    }
   }
 
   pub fn tl(&self) -> BB {
@@ -109,7 +116,7 @@ impl BB {
   }
 
   #[inline]
-  pub fn contains(&self, b: &BB) -> bool {
+  pub fn contains(self, b: BB) -> bool {
     self.l <= b.l && self.b <= b.b && self.r >= b.r && self.t >= b.t
   }
 
@@ -124,6 +131,10 @@ impl BB {
   #[inline]
   pub fn overlaps(self, b: BB) -> bool {
     self.l <= b.r && self.b <= b.t && self.r >= b.l && self.t >= b.b
+  }
+
+  pub fn overlaps_point(self, p: V2) -> bool {
+    self.l <= p.x && self.b <= p.y && self.r >= p.x && self.t >= p.y
   }
 
   pub fn overlap_children(self, i: usize, b: BB) -> bool {
@@ -152,7 +163,7 @@ impl fmt::Display for BB {
 
 #[test]
 fn bb_contains() {
-  assert!(BB { t: 0f32, l: 0f32, b: -4f32, r: 4f32 }.contains(&BB { t: -1f32, l: 1f32, b: -3f32, r: 3f32 }))
+  assert!(BB { t: 0f32, l: 0f32, b: -4f32, r: 4f32 }.contains(BB { t: -1f32, l: 1f32, b: -3f32, r: 3f32 }))
 }
 
 pub struct BBId {

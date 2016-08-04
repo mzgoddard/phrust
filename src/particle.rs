@@ -63,14 +63,20 @@ impl Particle {
   pub fn integrate(&mut self, dt2: f32) {
     // let lastpos = self.last_position * LAST_POS_MUL;
     let position = self.position;
-    self.position =
-      self.position.scale_add(
-        self.drag + 1.0,
-        self.last_position.scale_add(
-          -self.drag,
-          self.acceleration.scale(dt2)
-        )
-      );
+    // p = a * dt2 + (p - lp) * drag + p
+    self.position = self.acceleration.scale_add(dt2,
+      (self.position - self.last_position).scale_add(self.drag,
+        self.position
+      )
+    );
+    // self.position =
+    //   self.position.scale_add(
+    //     self.drag + 1.0,
+    //     self.last_position.scale_add(
+    //       -self.drag,
+    //       self.acceleration.scale(dt2)
+    //     )
+    //   );
     self.last_position = position;
     // self.acceleration = V2::zero();
     // self.bbox = self.bb();

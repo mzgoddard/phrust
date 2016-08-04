@@ -97,27 +97,41 @@ impl Collision {
 
   #[inline]
   pub fn test2(a: &Particle, b: &Particle) -> bool {
-    // (a.radius + b.radius) > a.position.dist(b.position)
     (a.radius + b.radius) * (a.radius + b.radius) > a.position.dist2(b.position)
   }
 
   #[inline]
   pub fn solve2(a: &Particle, b: &Particle) -> (V2, V2, f32, f32) {
     let diff = a.position - b.position;
-    let ingress_ep = a.position.dist(b.position) + EPSILON;
-    // Decrease ingress a little to increase the power of the spring a little.
-    let pqt = ((((a.radius + b.radius) / (ingress_ep)) - 1.0f32).min(1.0) / (ingress_ep));
-    // let pqt = (a.radius + b.radius - 0.1 - ingress_ep) / (ingress_ep) * 0.5;
-    let ingress = (a.radius + b.radius - ingress_ep) / (a.radius + b.radius);
+    let abr = a.radius + b.radius;
+    let ingress_r = diff.rmag();
+    let pqt = (abr * ingress_r + -1.0).min(1.0) * ingress_r;
+    let ingress = -1.0 / (abr * ingress_r) + 1.0;
+    let am = b.mass / (a.mass + b.mass);
+    let bm = a.mass / (a.mass + b.mass);
 
     (
       // diff.scale(pqt),
       // diff.scale(-pqt),
-      diff.scale(b.mass / (a.mass + b.mass) * pqt),
-      diff.scale(-a.mass / (a.mass + b.mass) * pqt),
-      ingress * b.mass / (a.mass + b.mass),
-      ingress * a.mass / (a.mass + b.mass)
+      diff.scale(am * pqt),
+      diff.scale(-bm * pqt),
+      ingress * am,
+      ingress * bm
     )
+    // let diff = a.position - b.position;
+    // let ingress_ep = a.position.dist(b.position) + EPSILON;
+    // // Decrease ingress a little to increase the power of the spring a little.
+    // let pqt = ((((a.radius + b.radius) / (ingress_ep)) - 1.0f32).min(1.0) / (ingress_ep));
+    // let ingress = (a.radius + b.radius - ingress_ep) / (a.radius + b.radius);
+    //
+    // (
+    //   // diff.scale(pqt),
+    //   // diff.scale(-pqt),
+    //   diff.scale(b.mass / (a.mass + b.mass) * pqt),
+    //   diff.scale(-a.mass / (a.mass + b.mass) * pqt),
+    //   ingress * b.mass / (a.mass + b.mass),
+    //   ingress * a.mass / (a.mass + b.mass)
+    // )
   }
 
   #[inline]

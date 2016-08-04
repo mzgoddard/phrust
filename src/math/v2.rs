@@ -14,7 +14,7 @@ pub struct V2 {
 #[macro_export]
 macro_rules! v2 {
   ($x:expr, $y:expr) => { {
-    V2 {x: $x as f32, y: $y as f32}
+    V2 {x: ($x) as f32, y: ($y) as f32}
   } }
 }
 
@@ -45,6 +45,31 @@ impl_binary_op!{ Sub, sub }
 impl_binary_op!{ Mul, mul }
 impl_binary_op!{ Div, div }
 impl_binary_op!{ Rem, rem }
+
+macro_rules! impl_assign_op {
+    ($t:ty, $n:ident) => (
+        // #[stable]
+        impl $t for V2 {
+            #[inline]
+            fn $n(&mut self, other: V2) {
+              macro_rules! impl_op_op {
+                (add_assign) => ( { self.x += other.x; self.y += other.y; } );
+                (sub_assign) => ( { self.x -= other.x; self.y -= other.y; } );
+                (mul_assign) => ( { self.x *= other.x; self.y *= other.y; } );
+                (div_assign) => ( { self.x /= other.x; self.y /= other.y; } );
+                (rem_assign) => ( { self.x %= other.x; self.y %= other.y; } );
+              }
+              impl_op_op!($n)
+            }
+        }
+    )
+}
+
+impl_assign_op!{ AddAssign, add_assign }
+impl_assign_op!{ SubAssign, sub_assign }
+impl_assign_op!{ MulAssign, mul_assign }
+impl_assign_op!{ DivAssign, div_assign }
+impl_assign_op!{ RemAssign, rem_assign }
 
 macro_rules! impl_unary_op {
     ($t:ty, $n:ident) => (
@@ -88,9 +113,10 @@ impl V2 {
     V2 { x: self.x * other, y: self.y * other }
   }
 
-  #[inline]
+  #[inline(always)]
   pub fn scale_add(self: V2, scale: f32, add: V2) -> V2 {
-    V2 { x: self.x.mul_add(scale, add.x), y: self.y.mul_add(scale, add.y) }
+    V2 { x: self.x * scale + add.x, y: self.y * scale + add.y }
+    // V2 { x: self.x.mul_add(scale, add.x), y: self.y.mul_add(scale, add.y) }
   }
 
   #[inline]
@@ -143,6 +169,12 @@ impl V2 {
   }
 
   #[inline]
+  pub fn rmag(self: V2) -> f32 {
+    1.0 / (self.x * self.x + self.y * self.y).sqrt()
+    // 1.0 / self.x.hypot(self.y)
+  }
+
+  #[inline]
   pub fn dist2(self, other: V2) -> f32 {
     (self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (self.y - other.y)
     // let x = self.x - other.x;
@@ -157,8 +189,13 @@ impl V2 {
   }
 
   #[inline]
+  pub fn rdist(self, other: V2) -> f32 {
+    1.0 / ((self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (self.y - other.y)).sqrt()
+  }
+
+  #[inline]
   pub fn unit(self: V2) -> V2 {
-    self.div_scale(self.mag())
+    self.scale(self.rmag())
   }
 }
 

@@ -8,19 +8,15 @@ use self::gl::types::*;
 use std::ffi::CString;
 use std::ptr;
 use std::os::raw;
-
-use std::sync::mpsc::Receiver;
+use std::mem;
 
 use super::math::*;
 use super::world::World;
 
 pub struct WorldRenderer {
-  shader_program: GLuint,
-  position_attribute: GLuint,
-  color_attribute: GLuint,
-  modelview_projection: GLint,
-  buffer: [GLuint; 1],
-  data: Vec<particle>,
+  // data: Vec<particle>,
+  driver: Box<Driver>,
+  render_data: RenderData,
   // pub world: World,
   // glfw: glfw::Glfw,
   // window: glfw::Window,
@@ -29,21 +25,21 @@ pub struct WorldRenderer {
 
 macro_rules! c_str {
     ($s:expr) => { {
-        concat!($s, "\0").as_ptr() as *const i8
+      ($s).as_ptr() as *const i8
     } }
 }
 
 #[derive(Clone, Copy, Default)]
-struct color {
+struct GLColor {
   r: GLubyte,
   g: GLubyte,
   b: GLubyte,
   a: GLubyte,
 }
 
-impl color {
-  fn from_bytes(bytes: &[u8]) -> color {
-    color {
+impl GLColor {
+  fn from_bytes(bytes: &[u8]) -> GLColor {
+    GLColor {
       r: bytes[0],
       g: bytes[1],
       b: bytes[2],
@@ -54,39 +50,329 @@ impl color {
 
 macro_rules! color {
     ($s:expr) => { {
-      color::from_bytes($s)
+      GLColor::from_bytes($s)
     } }
 }
 
 #[derive(Clone, Copy, Default)]
-struct vertex {
+struct GLVertex {
   x: GLfloat,
   y: GLfloat,
-  color: color,
+  color: GLColor,
 }
 
 #[derive(Clone, Copy, Default)]
-struct particle {
-  vertices: [vertex; 6],
+struct GLParticle {
+  vertices: [GLVertex; 6],
 }
 
-impl BB {
-  fn into_particle(self, color: color) -> particle {
-    particle {
-      vertices: [
-        vertex {x: self.l as f32, y: self.t as f32, color: color},
-        vertex {x: self.r as f32, y: self.t as f32, color: color},
-        vertex {x: self.r as f32, y: self.b as f32, color: color},
-        vertex {x: self.l as f32, y: self.t as f32, color: color},
-        vertex {x: self.l as f32, y: self.b as f32, color: color},
-        vertex {x: self.r as f32, y: self.b as f32, color: color},
-      ],
+#[repr(usize)]
+enum RenderPropertyType {
+  Matrix,
+}
+
+impl RenderPropertyType {
+  fn as_usize(&self) -> usize {
+    unsafe { *mem::transmute::<&RenderPropertyType, &usize>(self) }
+  }
+}
+
+struct RenderProperty {
+  property_type: RenderPropertyType,
+  values: Vec<u8>,
+}
+
+impl RenderProperty {
+  fn new<T>(property_type: RenderPropertyType, values: T) -> RenderProperty {
+    let mut buffer = Vec::<u8>::with_capacity(mem::size_of::<T>());
+    unsafe {
+      buffer.set_len(mem::size_of::<T>());
+      *(mem::transmute::<*mut u8, *mut T>(buffer.as_mut_ptr())) = values;
+    }
+    RenderProperty {
+      property_type: property_type,
+      values: buffer,
     }
   }
 }
 
-impl WorldRenderer {
-  pub fn init_gl<F>(mut get_proc_address: F) where F: FnMut(&str) -> *const raw::c_void {
+#[repr(usize)]
+enum MeshPropertyType {
+  Vertex,
+  Color,
+}
+
+impl MeshPropertyType {
+  fn as_usize(&self) -> usize {
+    unsafe { *mem::transmute::<&MeshPropertyType, &usize>(self) }
+  }
+}
+
+struct MeshProperty {
+  property_type: MeshPropertyType,
+  values: Vec<u8>,
+}
+
+impl MeshProperty {
+  fn new<T>(property_type: MeshPropertyType, values: T) -> MeshProperty {
+    let mut buffer = Vec::<u8>::with_capacity(mem::size_of::<T>());
+    unsafe {
+      buffer.set_len(mem::size_of::<T>());
+      *(mem::transmute::<*mut u8, *mut T>(buffer.as_mut_ptr())) = values;
+    }
+    MeshProperty {
+      property_type: property_type,
+      values: buffer,
+    }
+  }
+}
+
+#[repr(usize)]
+enum RenderProgram {
+  VertexColor,
+}
+
+impl RenderProgram {
+  fn as_usize(&self) -> usize {
+    unsafe { *mem::transmute::<&RenderProgram, &usize>(self) }
+  }
+}
+
+struct RenderDraw {
+  program: RenderProgram,
+  properties: Vec<RenderProperty>,
+  mesh_properties: Vec<MeshProperty>,
+  mesh_triangles: usize,
+  mesh: Vec<u8>,
+}
+
+struct RenderPass {
+  draws: Vec<RenderDraw>,
+}
+
+struct RenderData {
+  passes: Vec<RenderPass>,
+}
+
+trait Driver {
+  fn draw(&mut self, &RenderData);
+}
+
+struct GLUniformMatrixData {
+  count: GLint,
+  transpose: GLboolean,
+  value: [f32; 16],
+}
+
+// impl GLUniformMatrixData {
+//   fn new(count: GLint, transpose: GLboolean, value: [f32; 16]) -> GLUniformMatrixData {
+//     GLUniformMatrixData {
+//       count: count,
+//       transpose: transpose,
+//       value: value,
+//     }
+//   }
+// }
+
+struct GLAttribData {
+  size: GLint,
+  data_type: GLuint,
+  normalized: GLboolean,
+  stride: GLint,
+  pointer: GLint,
+}
+
+// impl GLAttribData {
+//   fn new(size: GLint, data_type: GLuint, normalized: GLboolean, stride: GLint, pointer: GLint) -> GLAttribData {
+//     GLAttribData {
+//       size: size,
+//       data_type: data_type,
+//       normalized: normalized,
+//       stride: stride,
+//       pointer: pointer,
+//     }
+//   }
+// }
+
+const GL_RENDER_PROPERTY_NAMES : [&'static str; 1] = [
+  "modelview_projection\0",
+];
+
+const GL_MESH_PROPERTY_NAMES : [&'static str; 2] = [
+  "a_position\0",
+  "a_color\0",
+];
+
+struct GLProgram {
+  id: u32,
+  render_properties: Vec<i32>,
+  mesh_properties: Vec<i32>,
+}
+
+impl GLProgram {
+  fn new(frag_source: &'static str, vert_source: &'static str) -> GLProgram {
+    unsafe {
+      let id = GLProgram::compile_program(frag_source, vert_source);
+      let render_properties = GLProgram::load_render_properties(id);
+      let mesh_properties = GLProgram::load_mesh_properties(id);
+      GLProgram {
+        id: id,
+        render_properties: render_properties,
+        mesh_properties: mesh_properties,
+      }
+    }
+  }
+
+  unsafe fn compile_program(frag_source: &'static str, vert_source: &'static str) -> GLuint {
+    let shader_program = gl::CreateProgram();
+
+    let fragment = gl::CreateShader(gl::FRAGMENT_SHADER);
+    GLProgram::compile_shader(fragment, frag_source);
+    gl::AttachShader(shader_program, fragment);
+
+    let vertex = gl::CreateShader(gl::VERTEX_SHADER);
+    GLProgram::compile_shader(vertex, vert_source);
+    gl::AttachShader(shader_program, vertex);
+
+    gl::LinkProgram(shader_program);
+    let mut program_status : gl::types::GLint = 0;
+    gl::GetProgramiv(shader_program, gl::LINK_STATUS, &mut program_status as *mut _);
+    if program_status as gl::types::GLboolean == gl::FALSE {
+      let mut len = 0;
+      gl::GetProgramiv(shader_program, gl::INFO_LOG_LENGTH, &mut len);
+      let mut log_buffer = Vec::<u8>::with_capacity(len as usize);
+      log_buffer.set_len(len as usize);
+      let mut buffer_used = 0;
+      gl::GetProgramInfoLog(shader_program, len, &mut buffer_used, log_buffer.as_mut_ptr() as *mut _);
+      panic!("program failed compilation: {}", String::from_utf8(log_buffer).unwrap().as_str());
+    }
+
+    shader_program
+  }
+
+  unsafe fn compile_shader(shader: GLuint, source: &'static str) {
+    let source_cstr = CString::new(source).unwrap();
+    // let source_bytes = source_cstr.as_bytes_with_nul();
+    let source_ptr = &source_cstr.as_ptr() as *const *const i8;
+    let source_len : i32 = source.len() as i32;
+    gl::ShaderSource(shader, 1, source_ptr, &source_len as *const _);
+    gl::CompileShader(shader);
+
+    let mut compile_status : gl::types::GLint = 0;
+    gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut compile_status);
+
+    if compile_status as gl::types::GLboolean == gl::FALSE {
+      let mut info_log_length : gl::types::GLint = 0;
+      gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut info_log_length);
+      if info_log_length == 0 {
+        info_log_length = 256;
+      }
+      println!("shader: failed compilation");
+      let mut info_log_buffer = Vec::<u8>::with_capacity(info_log_length as usize + 1);
+      // info_log_length.set_len(info_log_length);
+      for _ in 0..(info_log_length as usize + 1) {
+        info_log_buffer.push(0);
+      }
+      let mut returned_len = 0;
+      gl::GetShaderInfoLog(shader, info_log_length, &mut returned_len, info_log_buffer.as_mut_ptr() as *mut _);
+      println!("shader(info): {} {}\n", returned_len, String::from_utf8(info_log_buffer).unwrap().as_str());
+      // if let Ok(info_log_str) = info_log.into_string() {
+      //   panic!("shader(info): {}\n", &info_log_str as &str);
+      // }
+      // match CString::new(info_log_buffer) {
+      //    Ok(info_log) => {
+      //     gl::GetShaderInfoLog(shader, info_log_length, &mut 0 as *mut _, info_log.as_ptr() as *mut _);
+      //     if let Ok(info_log_str) = info_log.into_string() {
+      //       panic!("shader(info): {}\n", info_log_str);
+      //     }
+      //   },
+      //   _ => {
+      //     panic!("failed to get shader compilation failure");
+      //   },
+      // }
+    }
+  }
+
+  fn load_render_properties(shader_program: GLuint) -> Vec<i32> {
+    let mut properties = Vec::<i32>::new();
+    for name in GL_RENDER_PROPERTY_NAMES.iter() {
+      properties.push(unsafe {
+        gl::GetUniformLocation(shader_program, c_str!(name))
+      });
+    }
+    properties
+  }
+
+  fn load_mesh_properties(shader_program: GLuint) -> Vec<i32> {
+    let mut properties = Vec::<i32>::new();
+    for name in GL_MESH_PROPERTY_NAMES.iter() {
+      properties.push(unsafe {
+        gl::GetAttribLocation(shader_program, c_str!(name))
+      });
+    }
+    properties
+  }
+
+  fn use_program(&mut self) {
+    unsafe { gl::UseProgram(self.id); }
+  }
+
+  fn set_properties(&mut self, properties: &[RenderProperty]) {
+    for property in properties.iter() {
+      match property.property_type {
+        RenderPropertyType::Matrix => {
+          unsafe { 
+            let gl_uniform_data = &*mem::transmute::<*const u8, *const GLUniformMatrixData>(property.values.as_ptr());
+            gl::UniformMatrix4fv(
+              self.render_properties[property.property_type.as_usize()],
+              gl_uniform_data.count,
+              gl_uniform_data.transpose,
+              gl_uniform_data.value.as_ptr(),
+            );
+          }
+        },
+      }
+    }
+  }
+
+  fn set_mesh_properties(&mut self, properties: &[MeshProperty]) {
+    for property in properties.iter() {
+      unsafe {
+        let gl_attrib_data = &*mem::transmute::<*const u8, *const GLAttribData>(property.values.as_ptr());
+        gl::EnableVertexAttribArray(self.mesh_properties[property.property_type.as_usize()] as u32);
+        gl::VertexAttribPointer(
+          self.mesh_properties[property.property_type.as_usize()] as u32,
+          gl_attrib_data.size,
+          gl_attrib_data.data_type,
+          gl_attrib_data.normalized,
+          gl_attrib_data.stride,
+          ptr::null().offset(gl_attrib_data.pointer as isize),
+        );
+      }
+    }
+  }
+}
+
+#[cfg(target_os="ios")]
+const FRAGMENT_TEXT : &'static str = "varying lowp vec4 v_color;\nvoid main() {gl_FragColor = v_color;}";
+
+#[cfg(not(target_os="ios"))]
+const FRAGMENT_TEXT : &'static str = "varying vec4 v_color;\nvoid main() {gl_FragColor = v_color;}";
+
+const SHADER_TEXT : [(&'static str, &'static str); 1] = [
+  (
+    FRAGMENT_TEXT,
+    "uniform mat4 modelview_projection;\nattribute vec2 a_position;\nattribute vec4 a_color;\nvarying vec4 v_color;\nvoid main() {\n  v_color = a_color;\n  gl_Position = modelview_projection * vec4(a_position, 0, 1);\n}\n"
+  ),
+];
+
+pub struct GLDriver {
+  programs: Vec<GLProgram>,
+  buffers: Vec<u32>,
+}
+
+impl GLDriver {
+  pub fn init<F>(mut get_proc_address: F) where F: FnMut(&str) -> *const raw::c_void {
     // the supplied function must be of the type:
     // `&fn(symbol: &str) -> Option<extern "C" fn()>`
     // `window` is a glfw::Window
@@ -96,67 +382,117 @@ impl WorldRenderer {
     gl::Viewport::load_with(|s| get_proc_address(s) as *const _);
   }
 
-  pub fn new() -> WorldRenderer {
-    let mut renderer = WorldRenderer {
-      shader_program: 0,
-      position_attribute: 0,
-      color_attribute: 0,
-      modelview_projection: 0,
-      buffer: [0 as u32; 1],
-      data: Vec::<particle>::new(),
-      // world: world,
-      // glfw: glfw,
-      // window: window,
-      // events: events,
-    };
-
-    let shader_fragment_text = "varying vec4 v_color;\nvoid main() {gl_FragColor = v_color;}";
-    let shader_vertex_text = "uniform mat4 modelview_projection;\nattribute vec2 a_position;\nattribute vec4 a_color;\nvarying vec4 v_color;\nvoid main() {\n  v_color = a_color;\n  gl_Position = modelview_projection * vec4(a_position, 0, 1);\n}\n";
-
-    let shader_program = unsafe { renderer.compile_program(shader_fragment_text, shader_vertex_text) };
-    unsafe {
-      gl::UseProgram(shader_program);
+  pub fn new() -> GLDriver {
+    GLDriver {
+      programs: GLDriver::create_programs(),
+      buffers: GLDriver::create_buffers(),
     }
-    renderer.shader_program = shader_program;
-    renderer.position_attribute = unsafe {
-      let position_attribute = gl::GetAttribLocation(shader_program, c_str!("a_position")) as u32;
-      gl::EnableVertexAttribArray(position_attribute);
-      position_attribute
-    };
-    renderer.color_attribute = unsafe {
-      let color_attribute = gl::GetAttribLocation(shader_program, c_str!("a_color")) as u32;
-      gl::EnableVertexAttribArray(color_attribute);
-      color_attribute
-    };
-    renderer.modelview_projection = unsafe {
-      let modelview_projection = gl::GetUniformLocation(shader_program, c_str!("modelview_projection"));
-      // matrixtAttribute = modelview_projection;
-      let identity = [
-        1f32, 0f32, 0f32, 0f32,
-        0f32, 1f32, 0f32, 0f32,
-        0f32, 0f32, 1f32, 0f32,
-        0f32, 0f32, 0f32, 1f32
-      ];
-      gl::UniformMatrix4fv(modelview_projection, 1, gl::TRUE, &identity as *const f32);
-      modelview_projection
-    };
-
-    unsafe {
-      // let mut buffer = [0 as u32; 1];
-      gl::GenBuffers(1, renderer.buffer.as_mut_ptr() as *mut _);
-    };
-
-    renderer
   }
 
-  pub fn draw(&mut self, world: &World) {
+  fn create_programs() -> Vec<GLProgram> {
+    SHADER_TEXT.iter()
+    .map(|&(frag_source, vert_source)| GLProgram::new(frag_source, vert_source))
+    .collect()
+  }
+
+  fn create_buffers() -> Vec<u32> {
+    let mut buffers = Vec::<u32>::with_capacity(1);
+    unsafe { 
+      buffers.set_len(1);
+      gl::GenBuffers(1, buffers.as_mut_ptr() as *mut _);
+    }
+    buffers
+  }
+
+  fn buffer_data(&mut self, buffer_index: usize, mesh: &[u8]) {
+    unsafe {
+      gl::BindBuffer(gl::ARRAY_BUFFER, self.buffers[buffer_index]);
+      {
+        gl::BufferData(
+          gl::ARRAY_BUFFER,
+          mesh.len() as isize,
+          mesh.as_ptr() as *const raw::c_void,
+          gl::DYNAMIC_DRAW
+        );
+      }
+    }
+  }
+
+  fn inner_draw(&mut self, draw: &RenderDraw) {
+    unsafe {
+      gl::DrawArrays(gl::TRIANGLES, 0, draw.mesh_triangles as i32);
+    }
+  }
+}
+
+impl Driver for GLDriver {
+  fn draw(&mut self, data: &RenderData) {
     unsafe {
       gl::ClearColor(0.0, 0.0, 0.0, 0.0);
       gl::Clear(gl::COLOR_BUFFER_BIT);
       gl::Enable(gl::BLEND);
       gl::BlendFunc(gl::SRC_ALPHA, gl::DST_ALPHA);
+    }
 
-      gl::UseProgram(self.shader_program);
+    for pass in data.passes.iter() {
+      for draw in pass.draws.iter() {
+        self.buffer_data(0, &draw.mesh);
+        {
+          let mut program = &mut self.programs[draw.program.as_usize()];
+          program.use_program();
+          program.set_properties(&draw.properties);
+          program.set_mesh_properties(&draw.mesh_properties);
+        }
+        self.inner_draw(draw);
+      }
+    }
+  }
+}
+
+impl BB {
+  fn into_particle(self, color: GLColor) -> GLParticle {
+    GLParticle {
+      vertices: [
+        GLVertex {x: self.l as f32, y: self.t as f32, color: color},
+        GLVertex {x: self.r as f32, y: self.t as f32, color: color},
+        GLVertex {x: self.r as f32, y: self.b as f32, color: color},
+        GLVertex {x: self.l as f32, y: self.t as f32, color: color},
+        GLVertex {x: self.l as f32, y: self.b as f32, color: color},
+        GLVertex {x: self.r as f32, y: self.b as f32, color: color},
+      ],
+    }
+  }
+}
+
+impl WorldRenderer {
+  pub fn new() -> WorldRenderer {
+    WorldRenderer {
+      // data: Vec::<particle>::new(),
+      driver: Box::new(GLDriver::new()),
+      render_data: RenderData {
+        passes: vec!(
+          RenderPass {
+            draws: vec!(RenderDraw {
+              program: RenderProgram::VertexColor,
+              properties: Vec::<RenderProperty>::new(),
+              mesh_properties: Vec::<MeshProperty>::new(),
+              mesh_triangles: 0,
+              mesh: Vec::<u8>::new(),
+            }),
+          },
+        ),
+      },
+    }
+  }
+
+  pub fn update(&mut self, world: &World) {
+    unsafe {
+      // gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+      // gl::Clear(gl::COLOR_BUFFER_BIT);
+      // gl::Enable(gl::BLEND);
+      // gl::BlendFunc(gl::SRC_ALPHA, gl::DST_ALPHA);
+
+      // gl::UseProgram(self.shader_program);
 
       // GLfloat vertices[2 * 4] = {
       //   160, 120,
@@ -193,126 +529,73 @@ impl WorldRenderer {
       matrix[13] = ty;
       matrix[14] = tz;
 
-      gl::UniformMatrix4fv(self.modelview_projection, 1, gl::FALSE, matrix.as_mut_ptr() as *mut _);
-
-      // let mut data : [particle; 65536] = [Default::default(); 65536];
-      // let mut data = Vec::<particle>::new();
-      let mut num_particles : isize = world.iter_particles().count() as isize;
       {
-        let mut data = &mut self.data;
-        data.reserve(num_particles as usize);
-        data.set_len(num_particles as usize);
-        // data[0] = bb!(160, 160, 480, 480)
-        // .into_particle(color!(b"\x00\x00\xff\xff"));
-        let blue = color!(b"\x00\x00\xff\x88");
-        let red = color!(b"\xff\x00\x00\x88");
-        let yellow = color!(b"\xff\xff\x00\x88");
-        let orange = color!(b"\xff\x88\x00\x88");
-        let white = color!(b"\xff\xff\xff\x88");
-        for (i, particle) in world.iter_particles().enumerate() {
-          // num_particles = (i + 1) as isize;
-          let c = if particle.is_trigger() {
-            white
+        let draw = &mut self.render_data.passes[0].draws[0];
+
+        draw.properties.clear();
+        draw.properties.push(RenderProperty::new(
+          RenderPropertyType::Matrix,
+          GLUniformMatrixData {
+            count: 1,
+            transpose: gl::FALSE,
+            value: matrix,
+          },
+        ));
+
+        draw.mesh_properties.clear();
+        draw.mesh_properties.push(MeshProperty::new(
+          MeshPropertyType::Vertex,
+          GLAttribData {
+            size: 2,
+            data_type: gl::FLOAT,
+            normalized: gl::FALSE,
+            stride: 12,
+            pointer: 0,
+          },
+        ));
+        draw.mesh_properties.push(MeshProperty::new(
+          MeshPropertyType::Color,
+          GLAttribData {
+            size: 4,
+            data_type: gl::UNSIGNED_BYTE,
+            normalized: gl::TRUE,
+            stride: 12,
+            pointer: 8,
+          },
+        ));
+
+        let num_particles : isize = world.iter_particles().count() as isize;
+        draw.mesh_triangles = (num_particles * 6) as usize;
+        {
+          let mut data = &mut draw.mesh;
+          data.reserve((num_particles * 72) as usize);
+          data.set_len((num_particles * 72) as usize);
+
+          let blue = color!(b"\x00\x00\xff\x88");
+          let red = color!(b"\xff\x00\x00\x88");
+          let yellow = color!(b"\xff\xff\x00\x88");
+          let orange = color!(b"\xff\x88\x00\x88");
+          let white = color!(b"\xff\xff\xff\x88");
+          for (i, particle) in world.iter_particles().enumerate() {
+            let c = if particle.is_trigger() {
+              white
+            }
+            else if particle.uncontained {
+              // red
+              if i % 100 == 0 {orange} else {red}
+            }
+            else {
+              // blue
+              if i % 100 == 0 {yellow} else {blue}
+            };
+            *mem::transmute::<*mut u8, *mut GLParticle>(data.as_mut_ptr().offset((i * 72) as isize)) = particle.bbox.into_particle(c);
           }
-          else if particle.uncontained {
-            // red
-            if i % 100 == 0 {orange} else {red}
-          }
-          else {
-            // blue
-            if i % 100 == 0 {yellow} else {blue}
-          };
-          // data.push(particle.bbox.into_particle(c));
-          data[i] = particle.bbox.into_particle(c);
-        }
-      }
-      // data[0] = particle {
-      //   vertices: [
-      //     vertex {x: 160f32, y: 480f32, color: color {r: 0u8, g: 0u8, b: 255u8, a: 255u8}},
-      //     vertex {x: 480f32, y: 480f32, color: color {r: 0u8, g: 0u8, b: 255u8, a: 255u8}},
-      //     vertex {x: 480f32, y: 160f32, color: color {r: 0u8, g: 0u8, b: 255u8, a: 255u8}},
-      //     vertex {x: 160f32, y: 480f32, color: color {r: 0u8, g: 0u8, b: 255u8, a: 255u8}},
-      //     vertex {x: 160f32, y: 160f32, color: color {r: 0u8, g: 0u8, b: 255u8, a: 255u8}},
-      //     vertex {x: 480f32, y: 160f32, color: color {r: 0u8, g: 0u8, b: 255u8, a: 255u8}},
-      //   ],
-      // };
-      // struct gldata data;
-      // data.index = 0;
-      // reset_water_mesh(&data);
-      // phworldparticleiterator _wpitr;
-      // phWorldParticleIterator(world, &_wpitr);
-      // while (phWorldParticleNext(&_wpitr)) {
-      //   // set_particle_vertices(&data, phWorldParticleDeref(&_wpitr));
-      //   toggle_water_mesh_cells(&data, phWorldParticleDeref(&_wpitr));
-      // }
-
-      gl::BindBuffer(gl::ARRAY_BUFFER, self.buffer[0]);
-      {
-        let mut data_ptr : *const raw::c_void = ptr::null();
-        data_ptr = self.data.as_ptr() as *const raw::c_void;
-        gl::BufferData(
-          gl::ARRAY_BUFFER,
-          72 * num_particles,
-          data_ptr,
-          gl::DYNAMIC_DRAW
-        );
-      }
-
-      let position_offset : *const raw::c_void = ptr::null();
-      gl::VertexAttribPointer(self.position_attribute, 2, gl::FLOAT, gl::FALSE, 12, position_offset);
-      let color_offset : *const raw::c_void = ptr::null();
-      // ptr::write(&mut color_offset, 8);
-      gl::VertexAttribPointer(self.color_attribute, 4, gl::UNSIGNED_BYTE, gl::TRUE, 12, color_offset.offset(8));
-
-      gl::DrawArrays(gl::TRIANGLES, 0, (6 * num_particles) as i32 );
-    }
-  }
-
-  unsafe fn compile_program(&mut self, frag_source: &'static str, vert_source: &'static str) -> gl::types::GLuint {
-    let shader_program = gl::CreateProgram();
-    let fragment = gl::CreateShader(gl::FRAGMENT_SHADER);
-    self.compile_shader(fragment, frag_source);
-    gl::AttachShader(shader_program, fragment);
-
-    let vertex = gl::CreateShader(gl::VERTEX_SHADER);
-    self.compile_shader(vertex, vert_source);
-    gl::AttachShader(shader_program, vertex);
-
-    gl::LinkProgram(shader_program);
-    let mut programStatus : gl::types::GLint = 0;
-    gl::GetProgramiv(shader_program, gl::LINK_STATUS, &mut programStatus as *mut _);
-    if programStatus as gl::types::GLboolean == gl::FALSE {
-      println!("program failed compilation");
-    }
-
-    shader_program
-  }
-
-  unsafe fn compile_shader(&mut self, shader: gl::types::GLuint, source: &'static str) {
-    let source_cstr = CString::new(source).unwrap();
-    // let source_bytes = source_cstr.as_bytes_with_nul();
-    let source_ptr = &source_cstr.as_ptr() as *const *const i8;
-    let source_len : i32 = source.len() as i32;
-    gl::ShaderSource(shader, 1, source_ptr, &source_len as *const _);
-    gl::CompileShader(shader);
-
-    let mut compile_status : gl::types::GLint = 0;
-    gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut compile_status as *mut _);
-
-    if compile_status as gl::types::GLboolean == gl::FALSE {
-      let mut info_log_length : gl::types::GLint = 0;
-      gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut info_log_length as *mut i32);
-      println!("shader: failed compilation");
-      let mut info_log_buffer = Vec::<u8>::with_capacity(info_log_length as usize + 1);
-      for i in 0..(info_log_length as usize + 1) {
-        info_log_buffer.push(0);
-      }
-      if let Ok(info_log) = CString::new(info_log_buffer) {
-        gl::GetShaderInfoLog(shader, info_log_length, &mut 0 as *mut _, info_log.as_ptr() as *mut _);
-        if let Ok(info_log_str) = info_log.into_string() {
-          println!("shader(info): {}\n", info_log_str);
         }
       }
     }
+  }
+
+  pub fn draw(&mut self) {
+    self.driver.draw(&self.render_data);
   }
 }

@@ -39,7 +39,6 @@ struct Triggers {
   triggered: Vec<usize>,
 }
 
-#[derive(Default)]
 pub struct World {
   pub dt: f32,
   pub dt2: f32,
@@ -154,30 +153,133 @@ impl<T> AsAny for T where T : Any {
 //   }
 // }
 
+const PARTICLES_PER_JOB : usize = 4096;
+
 enum WorldJob {
   Particles(Box<ParticleJob>),
-  ShowAnswers
+  Integrate(Box<IntegrateJob>),
+  IntegrateDone,
+  Merge(Box<MergeJob>),
+  Apply(Box<ApplyJob>),
+  MergeAnswers((Vec<Positions>, Vec<Triggers>)),
+  TakeAnswers((Vec<Positions>, Vec<Triggers>)),
+  ShowAnswers,
+  ShutDown,
+}
+
+impl WorldJob {
+  fn unwrap_merge(self) -> Box<MergeJob> {
+    if let WorldJob::Merge(job) = self {
+      job
+    }
+    else {
+      panic!("Must be MergeJob to unwrap_merge")
+    }
+  }
+
+  fn unwrap_apply(self) -> Box<ApplyJob> {
+    if let WorldJob::Apply(job) = self {
+      job
+    }
+    else {
+      panic!("Must be ApplyJob to unwrap_apply")
+    }
+  }
+}
+
+impl Clone for WorldJob {
+  fn clone(&self) -> WorldJob {
+    match self {
+      &WorldJob::ShowAnswers => {
+        WorldJob::ShowAnswers
+      },
+      &WorldJob::IntegrateDone => {
+        WorldJob::IntegrateDone
+      },
+      &WorldJob::ShutDown => {
+        WorldJob::ShutDown
+      },
+      _ => {
+        panic!("Can't clone given WorldJob")
+      },
+    }
+  }
 }
 
 struct ParticleJob {
-  len: usize,
+  // len: usize,
   max: usize,
-  contained: usize,
-  triggers: usize,
-  particles: [Particle; 256],
+  // contained: usize,
+  // triggers: usize,
+  contained: *const Vec<usize>,
+  uncontained: *const Vec<usize>,
+  contained_triggers: *const Vec<usize>,
+  uncontained_triggers: *const Vec<usize>,
+  source: *const Vec<Particle>,
+  // particles: [Particle; 256],
 }
+
+unsafe impl Send for ParticleJob {}
+
+struct IntegrateJob {
+  start: usize,
+  end: usize,
+  particles: *mut Particle,
+
+  bb: BB,
+  dt2: f32,
+  gravity: V2,
+}
+
+unsafe impl Send for IntegrateJob {}
+
+struct MergeJob {
+  start: usize,
+  end: usize,
+  run: usize,
+  positions_a: *mut Positions,
+  triggers_a: *mut Triggers,
+  positions_b: *mut Positions,
+  triggers_b: *mut Triggers,
+}
+
+unsafe impl Send for MergeJob {}
+
+struct ApplyJob {
+  start: usize,
+  end: usize,
+  dt2: f32,
+  particles: *mut Particle,
+  triggered: *mut Vec<usize>,
+  answer_positions: *mut Positions,
+  answer_triggers: *mut Triggers,
+}
+
+unsafe impl Send for ApplyJob {}
 
 struct WorldPool {
   threads: usize,
-  jobs: Vec<Box<ParticleJob>>,
+  particle_jobs: Vec<Box<ParticleJob>>,
+  integrate_jobs: Vec<Box<IntegrateJob>>,
+  merge_jobs: Vec<Box<MergeJob>>,
+  apply_jobs: Vec<Box<ApplyJob>>,
   positions: Vec<(Vec<Positions>, Vec<Triggers>)>,
   
   // job_tx: Sender<WorldJob>,
   next_thread: usize,
+  maybe_solutions: Option<Vec<Positions>>,
+  maybe_triggers: Option<Vec<Triggers>>,
+  main_jobs: Vec<WorldJob>,
   job_txs: Vec<Sender<WorldJob>>,
+  particles_tx: Sender<Box<ParticleJob>>,
   particles_rx: Receiver<Box<ParticleJob>>,
+  integrate_tx: Sender<Box<IntegrateJob>>,
+  integrate_rx: Receiver<Box<IntegrateJob>>,
+  result_tx: Sender<WorldJob>,
+  result_rx: Receiver<WorldJob>,
+  positions_tx: Sender<(Vec<Positions>, Vec<Triggers>)>,
   positions_rx: Receiver<(Vec<Positions>, Vec<Triggers>)>,
-  positions_rx_tx: Sender<(Vec<Positions>, Vec<Triggers>)>,
+  positions_rx_txs: Vec<Sender<(Vec<Positions>, Vec<Triggers>)>>,
 }
 
 impl Positions {
@@ -192,8 +294,8 @@ impl Positions {
   #[inline]
   fn add_half(&mut self, p: V2, i: f32) {
     self.solutions = self.solutions + 0.5;
-    self.ingress = self.ingress + i / 2.0;
-    self.position = self.position + p.div_scale(2.0);
+    self.ingress = self.ingress + i * 0.5;
+    self.position = p.scale_add(0.5, self.position);
     // self.last_position = self.last_position + lp;
   }
 
@@ -269,7 +371,7 @@ trait MapParticlesIterator<'a> where Self : Sized + Iterator<Item=&'a usize> {
 
 impl<'a> WorldEditor<'a> {
   fn new(world: &'a mut World) -> WorldEditor {
-    let world_evil = unsafe { &mut *(&mut *world as &mut World) as *mut World };
+    let world_evil = &mut *(&mut *world as &mut World) as *mut World;
     WorldEditor {
       world: world,
       world_evil: world_evil,
@@ -363,10 +465,21 @@ impl<'a> WorldEditor<'a> {
 impl World {
   pub fn new(bb: BB) -> World {
     World {
+      dt: 0.0,
+      dt2: 0.0,
+      gravity: V2::zero(),
       bb: bb,
+
       volume_tree: VolumeRoot::new(bb!(-2621440, -2621440, 2621440, 2621440)),
       pool: Some(WorldPool::new()),
-      .. Default::default()
+
+      changes: Vec::new(),
+      effects: Vec::new(),
+      particles: Vec::new(),
+      triggered: Vec::new(),
+      free_particles: Vec::new(),
+      solve_positions: Vec::new(),
+      solve_triggered: Vec::new(),
     }
   }
 
@@ -483,56 +596,13 @@ impl World {
 
     self.volume_tree.update(&mut self.particles);
 
-    {
-      let mut volume_tree = unsafe { &mut *(&mut self.volume_tree as *mut VolumeRoot) as &mut VolumeRoot };
-
-      // let mut particles : [Particle; 512] = [Default::default(); 512];
-      // let mut particles_len = 0;
-      // let mut contained_len = 0;
-      // let mut positions = Vec::<Positions>::new();
-      // while positions.len() < self.particles.len() {
-      //   positions.push(Default::default());
-      // }
-      // for (v, (contained, uncontained)) in volume_tree.iter_volumes().enumerate() {
-      //   contained_len = contained.len();
-      //   self.copy_particles(&mut particles, &mut particles_len, contained, uncontained);
-      //   World::test_solve_particles(&particles, particles_len, contained_len, &mut positions);
-      // }
-      // let mut i = 0;
-      // while i < self.particles.len() {
-      //   let positions = &mut positions[i];
-      //   if positions.solutions > 0.0 {
-      //     self.solve_positions[i].merge(positions);
-      //     positions.clear();
-      //   }
-      //   i += 1;
-      // }
-
-      if let &mut Some(ref mut pool) = unsafe { &mut *(&mut self.pool as *mut Option<WorldPool>) as &mut Option<WorldPool> } {
-        for (v, (contained, uncontained, contained_triggers, uncontained_triggers)) in volume_tree.iter_volumes().enumerate() {
-          let mut job = pool.job();
-          let mut particles_len = 0;
-          self.copy_particles(&mut job.particles, &mut particles_len, contained, uncontained, contained_triggers, uncontained_triggers);
-          job.max = self.particles.len();
-          job.len = particles_len;
-          job.contained = contained.len();
-          job.triggers = contained.len() + uncontained.len();
-          pool.send(job);
-        }
-
-        pool.solutions(&mut |positions, triggers| {
-          World::merge_solutions(self.solve_positions.as_mut_ptr(), self.solve_triggered.as_mut_ptr(), positions, triggers);
-        });
-      }
-
-      // println!("iter solutions");
-      self.apply_solutions();
-    }
+    self.test_solve();
   }
 
+  #[inline(never)]
   fn apply_effects(&mut self) {
     {
-      let mut editor = self.edit();
+      let editor = self.edit();
       for effect in editor.iter_effects() {
         effect.apply(&editor);
       }
@@ -548,16 +618,39 @@ impl World {
     }
   }
 
+  #[inline(never)]
   fn integrate_particles(&mut self) {
-    let gravity = self.gravity;
-    let self_bb = self.bb;
-    for particle in self.particles.iter_mut() {
+    if let Some(ref mut pool) = self.pool {
+      let mut i = 0;
+      let len = self.particles.len();
+      while i < self.particles.len() {
+        let mut job = pool.integrate_job();
+        job.start = i;
+        job.end = if i + PARTICLES_PER_JOB > len {len} else {i + PARTICLES_PER_JOB};
+        job.particles = self.particles.as_mut_ptr();
+        job.dt2 = self.dt2;
+        job.bb = self.bb;
+        job.gravity = self.gravity;
+        pool.send_integrate(job);
+        i += PARTICLES_PER_JOB;
+      }
+      pool.wait_on_integrate();
+    }
+  }
+
+  fn _integrate_particles(job: &mut IntegrateJob) {
+    let gravity = job.gravity;
+    let self_bb = job.bb;
+    let mut i = job.start;
+    while i < job.end {
+      let particle = unsafe { &mut *job.particles.offset(i as isize) };
+      i += 1;
+    // for particle in unsafe { &mut *job.particles }.iter_mut() {
       if particle.is_dynamic() {
         particle.acceleration = particle.acceleration + gravity;
-        particle.integrate(self.dt2);
+        particle.integrate(job.dt2);
       }
 
-      // let bb = particle.bbox;
       let constrain_x =
         (self_bb.l - (particle.position.x - particle.radius)).max(0.0) +
         (self_bb.r - (particle.position.x + particle.radius)).min(0.0);
@@ -575,6 +668,8 @@ impl World {
       particle.last_position.x = particle.last_position.x - constrain_x;
       particle.last_position.y = particle.last_position.y - constrain_y;
 
+      // particle.bbox = particle.bb();
+      // let bb = particle.bbox;
       // if bb.l < self.bb.l {
       //   particle.position.x += self.bb.l - bb.l;
       //   particle.last_position.x -= self.bb.l - bb.l;
@@ -602,23 +697,87 @@ impl World {
     }
   }
 
-  fn copy_particles(&self, particles: &mut [Particle], particles_len: &mut usize, contained: &[usize], uncontained: &[usize], contained_triggers: &[usize], uncontained_triggers: &[usize]) {
+  #[inline(never)]
+  fn test_solve(&mut self) {
+    let mut volume_tree = unsafe { &mut *(&mut self.volume_tree as *mut VolumeRoot) as &mut VolumeRoot };
+
+    // let mut particles : [Particle; 512] = [Default::default(); 512];
+    // let mut particles_len = 0;
+    // let mut contained_len = 0;
+    // let mut positions = Vec::<Positions>::new();
+    // while positions.len() < self.particles.len() {
+    //   positions.push(Default::default());
+    // }
+    // for (v, (contained, uncontained)) in volume_tree.iter_volumes().enumerate() {
+    //   contained_len = contained.len();
+    //   self.copy_particles(&mut particles, &mut particles_len, contained, uncontained);
+    //   World::test_solve_particles(&particles, particles_len, contained_len, &mut positions);
+    // }
+    // let mut i = 0;
+    // while i < self.particles.len() {
+    //   let positions = &mut positions[i];
+    //   if positions.solutions > 0.0 {
+    //     self.solve_positions[i].merge(positions);
+    //     positions.clear();
+    //   }
+    //   i += 1;
+    // }
+
+    if let &mut Some(ref mut pool) = unsafe { &mut *(&mut self.pool as *mut Option<WorldPool>) as &mut Option<WorldPool> } {
+      for (contained, uncontained, contained_triggers, uncontained_triggers) in volume_tree.iter_volumes() {
+        if contained.len() + uncontained.len() + contained_triggers.len() + uncontained_triggers.len() > 256 {
+          println!("Skipping volume that can't be subdivided under current 256 particle limit");
+        }
+
+        let mut job = pool.job();
+        // let mut particles_len = 0;
+        // World::copy_particles(self.particles.as_ptr(), &mut job.particles, &mut particles_len, contained, uncontained, contained_triggers, uncontained_triggers);
+        job.source = &self.particles;
+        job.max = self.particles.len();
+        job.contained = &*contained;
+        job.uncontained = &*uncontained;
+        job.contained_triggers = &*contained_triggers;
+        job.uncontained_triggers = &*uncontained_triggers;
+        // job.len = particles_len;
+        // job.contained = contained.len();
+        // job.triggers = contained.len() + uncontained.len();
+        pool.send(job);
+      }
+
+      // pool.solutions(&mut |positions, triggers| {
+      //   // World::merge_solutions(self.solve_positions.as_mut_ptr(), self.solve_triggered.as_mut_ptr(), positions, triggers);
+      //   // self.apply_solutions(positions, triggers);
+      // });
+
+      let particles = unsafe { &mut self.particles };
+      let triggered = unsafe { &mut self.triggered };
+      pool.apply_solutions(self.dt2, particles, triggered);
+    }
+
+    // println!("iter solutions");
+    // let solve_positions = unsafe { &mut *(&mut self.solve_positions as *mut _) };
+    // let solve_triggered = unsafe { &mut *(&mut self.solve_triggered as *mut _) };
+    // self.apply_solutions(solve_positions, solve_triggered);
+  }
+
+  #[inline(never)]
+  fn copy_particles(s: *const Vec<Particle>, particles: &mut [Particle], particles_len: &mut usize, contained: *const Vec<usize>, uncontained: *const Vec<usize>, contained_triggers: *const Vec<usize>, uncontained_triggers: *const Vec<usize>) {
     // *particles_len = 0;
     // for (i, &id) in contained.iter().chain(uncontained.iter()).enumerate() {
     //   // println!("{}", *id);
     //   // *particles_len = i + 1;
     //   particles[i] = self.particles[id];
     // }
-    let s = self.particles.as_ptr();
+    let s = unsafe { (*s).as_ptr() };
     let mut p = particles.as_mut_ptr();
-    let c = contained.as_ptr();
-    let cl = contained.len();
-    let u = uncontained.as_ptr();
-    let ul = uncontained.len();
-    let ct = contained_triggers.as_ptr();
-    let ctl = contained_triggers.len();
-    let ut = uncontained_triggers.as_ptr();
-    let utl = uncontained_triggers.len();
+    let c = unsafe { (*contained).as_ptr() };
+    let cl = unsafe { (*contained).len() };
+    let u = unsafe { (*uncontained).as_ptr() };
+    let ul = unsafe { (*uncontained).len() };
+    let ct = unsafe { (*contained_triggers).as_ptr() };
+    let ctl = unsafe { (*contained_triggers).len() };
+    let ut = unsafe { (*uncontained_triggers).as_ptr() };
+    let utl = unsafe { (*uncontained_triggers).len() };
     let mut i = 0;
     while i < cl {
       unsafe { *p.offset(i as isize) = *s.offset(*c.offset(i as isize) as isize); }
@@ -645,28 +804,53 @@ impl World {
     *particles_len = cl + ul + ctl + utl;
   }
 
+  fn _test_solve_particles(particles: &mut ParticleJob, particle_copies: &mut [Particle; 256], solutions: &mut Vec<Positions>, scratch: &mut [Positions; 256], triggers: &mut Vec<Triggers>) {
+    while solutions.len() < particles.max {
+      solutions.push(Default::default());
+    }
+    while triggers.len() < particles.max {
+      triggers.push(Default::default());
+    }
+    let mut len = 0;
+    let contained = unsafe { (*particles.contained).len() };
+    let triggers_len = unsafe { (*particles.contained).len() + (*particles.uncontained).len() };
+    World::copy_particles(particles.source, particle_copies, &mut len, particles.contained, particles.uncontained, particles.contained_triggers, particles.uncontained_triggers);
+    // println!("{} {} {}", len, contained, triggers_len);
+    World::test_solve_particles(&*particle_copies, len, contained, triggers_len, solutions, scratch, triggers);
+  }
+
   fn test_solve_particles(particles: &[Particle], particles_len: usize, contained_len: usize, triggers_start: usize, positions: &mut [Positions], scratch: &mut [Positions], triggers: &mut [Triggers]) {
     let mut i = 0;
-    let mut j = 0;
-    let mut p = particles.as_ptr();
-    let mut s = scratch.as_mut_ptr();
-    let mut t = triggers.as_mut_ptr();
+    let mut j;
+    let p = particles.as_ptr();
+    let s = scratch.as_mut_ptr();
+    let t = triggers.as_mut_ptr();
+    let mut c = [0 as usize; 256];
+    let mut ci = 0;
     while i < contained_len {
       let a = unsafe { &*p.offset(i as isize) };
-      // let a_p = &mut a;
       let sa = unsafe { &mut *s.offset(i as isize) };
       j = i + 1;
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
         if Collision::test2(a, b) {
-          let (ap, bp, ain, bin) = Collision::solve2(a, b);
-          let sb = unsafe { &mut *s.offset(j as isize) };
-          // a.position = a.position + ap;
-          // b.position = b.position + bp;
-          sa.add(ap, ain);
-          sb.add(bp, bin);
+          c[ci] = j;
+          ci += 1;
+          // let (ap, bp, ain, bin) = Collision::solve2(a, b);
+          // let sb = unsafe { &mut *s.offset(j as isize) };
+          // sa.add(ap, ain);
+          // sb.add(bp, bin);
         }
         j += 1;
+      }
+      while ci > 0 {
+        ci -= 1;
+        j = c[ci];
+        let b = unsafe { &*p.offset(j as isize) };
+        let sb = unsafe { &mut *s.offset(j as isize) };
+        let (ap, bp, ain, bin) = Collision::solve2(a, b);
+        sa.add(ap, ain);
+        sb.add(bp, bin);
       }
       i += 1;
     }
@@ -678,14 +862,23 @@ impl World {
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
         if Collision::test2(a, b) {
-          let (ap, bp, ain, bin) = Collision::solve2(a, b);
-          let sb = unsafe { &mut *s.offset(j as isize) };
-          // a.position = a.position + ap.scale(0.5);
-          // b.position = b.position + bp.scale(0.5);
-          sa.add_half(ap, ain);
-          sb.add_half(bp, bin);
+          c[ci] = j;
+          ci += 1;
+          // let (ap, bp, ain, bin) = Collision::solve2(a, b);
+          // let sb = unsafe { &mut *s.offset(j as isize) };
+          // sa.add_half(ap, ain);
+          // sb.add_half(bp, bin);
         }
         j += 1;
+      }
+      while ci > 0 {
+        ci -= 1;
+        j = c[ci];
+        let b = unsafe { &*p.offset(j as isize) };
+        let sb = unsafe { &mut *s.offset(j as isize) };
+        let (ap, bp, ain, bin) = Collision::solve2(a, b);
+        sa.add_half(ap, ain);
+        sb.add_half(bp, bin);
       }
       i += 1;
     }
@@ -722,15 +915,14 @@ impl World {
     }
   }
 
-  fn merge_solutions(s: *mut Positions, t: *mut Triggers, positions: &mut Vec<Positions>, triggers: &mut Vec<Triggers>) {
-    let mut i : isize = 0;
-    let l : isize = positions.len() as isize;
-    let p = positions.as_mut_ptr();
-    let pt = triggers.as_mut_ptr();
-    // let s = solve_positions.as_mut_ptr();
-    // let t = solve_triggered.as_mut_ptr();
+  fn _merge_answers(merge: &mut MergeJob) {
+    let mut i : isize = merge.start as isize;
+    let l : isize = merge.end as isize;
+    let s = merge.positions_a;
+    let t = merge.triggers_a;
+    let p = merge.positions_b;
+    let pt = merge.triggers_b;
     while i < l {
-    // for (position, total) in positions.iter_mut().zip(self.solve_positions.iter_mut()) {
       let position = unsafe { &mut *p.offset(i) as &mut Positions };
       if position.solutions > 0.0 {
         unsafe { &mut *s.offset(i) as &mut Positions }.merge(position);
@@ -747,21 +939,44 @@ impl World {
     }
   }
 
-  fn apply_solutions(&mut self) {
-    let mut i = 0;
-    let l = self.solve_positions.len();
-    let s = self.solve_positions.as_mut_ptr();
-    let p = self.particles.as_mut_ptr();
-    let dt2 = self.dt2;
+  fn merge_solutions(s: *mut Positions, t: *mut Triggers, positions: &mut Vec<Positions>, triggers: &mut Vec<Triggers>) {
+    let mut i : isize = 0;
+    let l : isize = positions.len() as isize;
+    let p = positions.as_mut_ptr();
+    let pt = triggers.as_mut_ptr();
+    while i < l {
+      let position = unsafe { &mut *p.offset(i) as &mut Positions };
+      if position.solutions > 0.0 {
+        unsafe { &mut *s.offset(i) as &mut Positions }.merge(position);
+        position.clear();
+      }
+      else {
+        let triggers = unsafe { &mut *pt.offset(i) as &mut Triggers };
+        if triggers.used {
+          unsafe { &mut *t.offset(i) as &mut Triggers }.merge(triggers);
+          triggers.clear();
+        }
+      }
+      i += 1;
+    }
+  }
+
+  fn apply_answers(apply: &mut ApplyJob) {
+    World::apply_solutions(apply.start, apply.end, apply.dt2, apply.particles, apply.triggered, apply.answer_positions, apply.answer_triggers);
+  }
+
+  #[inline(never)]
+  fn apply_solutions(start: usize, end: usize, dt2: f32, p: *mut Particle, t: *mut Vec<usize>, s: *mut Positions, st: *mut Triggers) {
+    let mut i = start;
+    let l = end;
+    // let s = solve_positions.as_mut_ptr();
+    // let p = particles.as_mut_ptr();
+    let dt2 = dt2;
     while i < l {
       let particle = unsafe { &mut *p.offset(i as isize) };
       if particle.is_dynamic() {
-        // let positions = &mut self.solve_positions[i];
         let positions = unsafe { &mut *s.offset(i as isize) };
-      // for (i, positions) in self.solve_positions.iter_mut().enumerate() {
         if positions.solutions > 0.0 {
-          // let particle = &mut self.particles[i];
-          // let particle = unsafe { &mut *p.offset(i as isize) };
           let solutions = positions.solutions;
           let inv_solutions = 1.0 / positions.solutions;
           if positions.ingress > 0.25 &&
@@ -783,6 +998,19 @@ impl World {
                 );
           }
           else {
+            // // drag
+            // p = p + 0.9 * (p - lp)
+            // // friction
+            // lp = p - 0.9 * (p - lp)
+            // lp = p + 0.9 * (lp - p)
+            particle.last_position =
+              (particle.last_position - particle.position)
+              .scale_add(
+                1.0 - particle.friction2 * solutions,
+                positions.last_position.scale_add(
+                  inv_solutions, particle.position
+                )
+              );
             particle.last_position =
               positions.last_position.scale_add(
                 inv_solutions,
@@ -794,13 +1022,7 @@ impl World {
                   )
               );
           }
-          // particle.last_position =
-          //   particle.last_position - positions.position;
           particle.position =
-            // positions.position + particle.position;
-            // particle.position.scale_add(solutions, positions.position).scale(inv_solutions);
-            // particle.position + positions.position.project(particle.acceleration);
-            // particle.position + positions.position;
             positions.position.scale_add(inv_solutions, particle.position);
           particle.acceleration = V2::zero();
           positions.clear();
@@ -810,82 +1032,121 @@ impl World {
         }
       }
       else if particle.is_trigger() {
-        self.triggered[i].clear();
-        self.triggered[i].extend(self.solve_triggered[i].iter().cloned());
-        self.solve_triggered[i].clear();
+        unsafe {
+          (*t.offset(i as isize)).clear();
+          (*t.offset(i as isize)).extend((*st.offset(i as isize)).iter().cloned());
+          (*st.offset(i as isize)).clear();
+        }
+        // triggered[i].clear();
+        // triggered[i].extend(solve_triggered[i].iter().cloned());
+        // solve_triggered[i].clear();
       }
       i += 1;
     }
   }
 }
 
-impl Default for ParticleJob {
-  fn default() -> ParticleJob {
-    ParticleJob {
-      len: 0,
-      max: 0,
-      contained: 0,
-      triggers: 0,
-      particles: [Default::default(); 256],
-    }
-  }
-}
+// impl Default for ParticleJob {
+//   fn default() -> ParticleJob {
+//     ParticleJob {
+//       // len: 0,
+//       max: 0,
+//       // contained: 0,
+//       // triggers: 0,
+//       contained: Default::default(),
+//       uncontained: Default::default(),
+//       contained_triggers: Default::default(),
+//       uncontained_triggers: Default::default(),
+//       source: Default::default(),
+//       // particles: [Default::default(); 256],
+//     }
+//   }
+// }
 
 impl WorldPool {
   fn new() -> WorldPool {
-    // let (job_tx, job_rx) = channel();
-    // let job_rx_mutex = Arc::new(Mutex::new(job_rx));
     let mut job_txs = Vec::<Sender<WorldJob>>::new();
     let (particles_tx, particles_rx) = channel();
+    let (integrate_tx, integrate_rx) = channel();
+    let (result_tx, result_rx) = channel();
     let (positions_tx, positions_rx) = channel();
-    let (positions_rx_tx, positions_tx_rx) = channel();
-    let positions_tx_rx_mutex = Arc::new(Mutex::new(positions_tx_rx));
+    let mut positions_rx_txs = Vec::new();
 
     let threads = num_cpus::get();
+    // let threads = 1;
     println!("WorldPool using {} threads.", threads);
 
-    for i in 0..threads {
+    {
+      let (job_tx, _) = channel();
+      job_txs.push(job_tx);
+    }
+
+    for _ in 1..threads {
       let (job_tx, job_rx) = channel();
       job_txs.push(job_tx);
-      // let job_rx_mutex = job_rx_mutex.clone();
       let particles_tx = particles_tx.clone();
+      let integrate_tx = integrate_tx.clone();
+      let result_tx = result_tx.clone();
       let positions_tx = positions_tx.clone();
-      let positions_tx_rx_mutex = positions_tx_rx_mutex.clone();
-      thread::spawn(move || {
+      let (positions_rx_tx, positions_tx_rx) = channel();
+      positions_rx_txs.push(positions_rx_tx);
+      thread::Builder::new().name("World thread".to_string()).spawn(move || {
         let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
         let mut maybe_triggers = Some(Vec::<Triggers>::new());
+        let mut particle_copies = [Particle { .. Default::default() }; 256];
         let mut scratch = [Positions { .. Default::default() }; 256];
         loop {
-          // let job = {
-          //   job_rx_mutex.lock().unwrap().recv().unwrap()
-          // };
           let job  = job_rx.recv().unwrap();
           match job {
             WorldJob::Particles(mut particles) => {
-              // println!("rx particles job");
               if let (Some(solutions), Some(triggers)) = (maybe_solutions.as_mut(), maybe_triggers.as_mut()) {
-                while solutions.len() < particles.max {
-                  solutions.push(Default::default());
-                }
-                while triggers.len() < particles.max {
-                  triggers.push(Default::default());
-                }
-                let len = particles.len;
-                let contained = particles.contained;
-                let triggers_len = particles.triggers;
-                World::test_solve_particles(&particles.particles, len, contained, triggers_len, solutions, &mut scratch, triggers);
-                particles_tx.send(particles);
+                World::_test_solve_particles(&mut *particles, &mut particle_copies, solutions, &mut scratch, triggers);
+                particles_tx.send(particles).unwrap();
               }
             },
+
+            WorldJob::Integrate(mut integrate) => {
+              World::_integrate_particles(&mut *integrate);
+              integrate_tx.send(integrate).unwrap();
+            },
+            WorldJob::IntegrateDone => {
+              result_tx.send(WorldJob::IntegrateDone).unwrap();
+            },
+
+            WorldJob::Merge(mut merge) => {
+              World::_merge_answers(&mut *merge);
+              result_tx.send(WorldJob::Merge(merge));
+            },
+
+            WorldJob::Apply(mut apply) => {
+              World::apply_answers(&mut *apply);
+              result_tx.send(WorldJob::Apply(apply));
+            },
+
+            WorldJob::MergeAnswers((mut position_answers, mut trigger_answers)) => {
+              if let (Some(solutions), Some(triggers)) = (maybe_solutions.as_mut(), maybe_triggers.as_mut()) {
+                World::merge_solutions(solutions.as_mut_ptr(), triggers.as_mut_ptr(), &mut position_answers, &mut trigger_answers);
+                positions_tx.send((position_answers, trigger_answers));
+              }
+            },
+
+            WorldJob::TakeAnswers((solutions, triggers)) => {
+              maybe_solutions = Some(solutions);
+              maybe_triggers = Some(triggers);
+            },
+
             WorldJob::ShowAnswers => {
-              // println!("rx answers job");
               positions_tx.send((
                 maybe_solutions.take().unwrap(),
                 maybe_triggers.take().unwrap(),
-              ));
-              let (solutions, triggers) = positions_tx_rx_mutex.lock().unwrap().recv().unwrap();
-              maybe_solutions = Some(solutions);
-              maybe_triggers = Some(triggers);
+              )).unwrap();
+              // let (solutions, triggers) = positions_tx_rx.recv().unwrap();
+              // maybe_solutions = Some(solutions);
+              // maybe_triggers = Some(triggers);
+            },
+
+            WorldJob::ShutDown => {
+              break;
             },
           }
         }
@@ -894,14 +1155,25 @@ impl WorldPool {
 
     WorldPool {
       threads: threads,
-      jobs: Vec::<Box<ParticleJob>>::new(),
+      particle_jobs: Vec::<Box<ParticleJob>>::new(),
+      integrate_jobs: Vec::new(),
+      merge_jobs: Vec::new(),
+      apply_jobs: Vec::new(),
       positions: Vec::<(Vec<Positions>, Vec<Triggers>)>::new(),
-      // job_tx: job_tx,
       next_thread: 0,
+      maybe_solutions: Some(Vec::new()),
+      maybe_triggers: Some(Vec::new()),
+      main_jobs: Vec::new(),
       job_txs: job_txs,
+      particles_tx: particles_tx,
       particles_rx: particles_rx,
+      integrate_tx: integrate_tx,
+      integrate_rx: integrate_rx,
+      result_tx: result_tx,
+      result_rx: result_rx,
+      positions_tx: positions_tx,
       positions_rx: positions_rx,
-      positions_rx_tx: positions_rx_tx,
+      positions_rx_txs: positions_rx_txs,
     }
   }
 
@@ -909,34 +1181,388 @@ impl WorldPool {
     if let Ok(particles) = self.particles_rx.try_recv() {
       particles
     }
-    else if let Some(particles) = self.jobs.pop() {
+    else if let Some(particles) = self.particle_jobs.pop() {
       particles
     }
     else {
-      Box::new(Default::default())
+      // Box::new(Default::default())
+      Box::new(ParticleJob {
+        max: 0,
+        contained: ptr::null(),
+        uncontained: ptr::null(),
+        contained_triggers: ptr::null(),
+        uncontained_triggers: ptr::null(),
+        source: ptr::null(),
+      })
     }
   }
 
-  fn send(&mut self, job: Box<ParticleJob>) {
-    let job_tx = &mut self.job_txs[self.next_thread];
-    job_tx.send(WorldJob::Particles(job));
+  fn integrate_job(&mut self) -> Box<IntegrateJob> {
+    if let Ok(integrate) = self.integrate_rx.try_recv() {
+      integrate
+    }
+    else if let Some(integrate) = self.integrate_jobs.pop() {
+      integrate
+    }
+    else {
+      Box::new(IntegrateJob {
+        start: 0,
+        end: 0,
+        particles: ptr::null_mut(),
+
+        dt2: 0.0,
+        bb: BB::infinity(),
+        gravity: V2::zero(),
+      })
+    }
+  }
+
+  fn merge_job(&mut self) -> Box<MergeJob> {
+    if let Some(merge) = self.merge_jobs.pop() {
+      merge
+    }
+    else {
+      Box::new(MergeJob {
+        start: 0,
+        end: 0,
+        run: 0,
+        positions_a: ptr::null_mut(),
+        triggers_a: ptr::null_mut(),
+        positions_b: ptr::null_mut(),
+        triggers_b: ptr::null_mut(),
+      })
+    }
+  }
+
+  fn apply_job(&mut self) -> Box<ApplyJob> {
+    if let Some(apply) = self.apply_jobs.pop() {
+      apply
+    }
+    else {
+      Box::new(ApplyJob {
+        start: 0,
+        end: 0,
+        dt2: 0.0,
+        particles: ptr::null_mut(),
+        triggered: ptr::null_mut(),
+        answer_positions: ptr::null_mut(),
+        answer_triggers: ptr::null_mut(),
+      })
+    }
+  }
+
+  fn _send(&mut self, job: WorldJob) {
+    if self.next_thread == 0 {
+      self.main_jobs.push(job);
+    }
+    else {
+      let job_tx = &mut self.job_txs[self.next_thread];
+      job_tx.send(job).unwrap();
+    }
     self.next_thread = self.next_thread + 1;
     if self.next_thread >= self.threads {
       self.next_thread = 0;
     }
   }
 
-  fn solutions(&mut self, handle: &mut FnMut(&mut Vec<Positions>, &mut Vec<Triggers>)) {
-    for i in 0..self.threads {
-      self.job_txs[i].send(WorldJob::ShowAnswers);
+  fn _send_all(&mut self, job: WorldJob) {
+    match job {
+      WorldJob::ShowAnswers => {
+        self.positions_tx.send((
+          self.maybe_solutions.take().unwrap(),
+          self.maybe_triggers.take().unwrap()
+        )).unwrap();
+      },
+      WorldJob::IntegrateDone => {
+        self.result_tx.send(WorldJob::IntegrateDone).unwrap();
+      },
+      _ => {},
     }
-    for i in 0..self.threads {
+    for i in 1..self.threads {
+      self.job_txs[i].send(job.clone()).unwrap();
+    }
+  }
+
+  fn send(&mut self, job: Box<ParticleJob>) {
+    self._send(WorldJob::Particles(job));
+  }
+
+  fn send_integrate(&mut self, job: Box<IntegrateJob>) {
+    self._send(WorldJob::Integrate(job));
+  }
+
+  fn send_merge(&mut self, job: Box<MergeJob>) {
+    self._send(WorldJob::Merge(job));
+  }
+
+  fn send_apply(&mut self, job: Box<ApplyJob>) {
+    self._send(WorldJob::Apply(job));
+  }
+
+  fn wait_on_integrate(&mut self) {
+    while self.main_jobs.len() > 0 {
+      match self.main_jobs.pop().unwrap() {
+        WorldJob::Integrate(mut integrate) => {
+          World::_integrate_particles(&mut *integrate);
+          self.integrate_tx.send(integrate).unwrap();
+        },
+        _ => {},
+      }
+    }
+
+    self._send_all(WorldJob::IntegrateDone);
+    for _ in 0..self.threads {
+      self.result_rx.recv().unwrap();
+    }
+  }
+
+  fn apply_solutions(&mut self, dt2: f32, particles: &mut Vec<Particle>, triggered: &mut Vec<Vec<usize>>) {
+    if let (&mut Some(ref mut solutions), &mut Some(ref mut triggers)) = (&mut self.maybe_solutions, &mut self.maybe_triggers) {
+      while solutions.len() < particles.len() {
+        solutions.push(Default::default());
+      }
+      while triggers.len() < particles.len() {
+        triggers.push(Default::default());
+      }
+      let mut particle_copies = [Default::default(); 256];
+      let mut scratch = [Default::default(); 256];
+      while self.main_jobs.len() > 0 {
+        match self.main_jobs.pop().unwrap() {
+          WorldJob::Particles(mut particles) => {
+            World::_test_solve_particles(&mut *particles, &mut particle_copies, solutions, &mut scratch, triggers);
+            self.particle_jobs.push(particles);
+          },
+          _ => {
+          },
+        }
+      }
+    }
+
+    self._send_all(WorldJob::ShowAnswers);
+
+    {
       let (mut solutions, mut triggers) = self.positions_rx.recv().unwrap();
-      handle(&mut solutions, &mut triggers);
+      let mut jobs_out = 0;
+      if self.threads >= 2 {
+        let (mut answer_positions, mut answer_triggers) = self.positions_rx.recv().unwrap();
+        let mut j = 0;
+        let len = answer_positions.len();
+        while j < len {
+          let mut job = self.merge_job();
+          job.start = j;
+          job.end = if j + PARTICLES_PER_JOB > len {len} else {j + PARTICLES_PER_JOB};
+          job.run = 0;
+          job.positions_a = solutions.as_mut_ptr();
+          job.triggers_a = triggers.as_mut_ptr();
+          job.positions_b = answer_positions.as_mut_ptr();
+          job.triggers_b = answer_triggers.as_mut_ptr();
+          self.send_merge(job);
+          jobs_out += 1;
+          j += PARTICLES_PER_JOB;
+        }
+        self.merge_jobs.clear();
+        self.positions.push((answer_positions, answer_triggers));
+      }
+
+      while self.main_jobs.len() > 0 {
+        match self.main_jobs.pop().unwrap() {
+          WorldJob::Merge(mut merge) => {
+            World::_merge_answers(&mut *merge);
+            self.result_tx.send(WorldJob::Merge(merge)).unwrap();
+          },
+          _ => {
+          },
+        }
+      }
+
+      for r in 1..(self.threads - 1) {
+        let (mut answer_positions, mut answer_triggers) = self.positions_rx.recv().unwrap();
+        let mut jobs_in = 0;
+        while self.merge_jobs.len() > 0 {
+          let mut job = self.merge_jobs.pop().unwrap();
+          job.run = r;
+          job.positions_b = answer_positions.as_mut_ptr();
+          job.triggers_b = answer_triggers.as_mut_ptr();
+          self.send_merge(job);
+        }
+        while jobs_in < jobs_out {
+          let mut job = self.result_rx.recv().unwrap().unwrap_merge();
+          if job.run > r {
+            self.merge_jobs.push(job);
+          }
+          else {
+            job.run = r;
+            job.positions_b = answer_positions.as_mut_ptr();
+            job.triggers_b = answer_triggers.as_mut_ptr();
+            self.send_merge(job);
+            jobs_in += 1;
+          }
+        }
+        self.positions.push((answer_positions, answer_triggers));
+
+        while self.main_jobs.len() > 0 {
+          match self.main_jobs.pop().unwrap() {
+            WorldJob::Merge(mut merge) => {
+              World::_merge_answers(&mut *merge);
+              self.result_tx.send(WorldJob::Merge(merge)).unwrap();
+            },
+            _ => {
+            },
+          }
+        }
+      }
+      if self.threads >= 2 {
+        let mut merge_jobs_in = 0;
+        let mut apply_jobs_in = 0;
+        while merge_jobs_in < jobs_out {
+          match self.result_rx.recv().unwrap() {
+            WorldJob::Merge(merge_job) => {
+              let mut apply_job = self.apply_job();
+              apply_job.start = merge_job.start;
+              apply_job.end = merge_job.end;
+              apply_job.dt2 = dt2;
+              apply_job.particles = particles.as_mut_ptr();
+              apply_job.triggered = triggered.as_mut_ptr();
+              apply_job.answer_positions = solutions.as_mut_ptr();
+              apply_job.answer_triggers = triggers.as_mut_ptr();
+              self.send_apply(apply_job);
+              self.merge_jobs.push(merge_job);
+              merge_jobs_in += 1;
+            },
+            WorldJob::Apply(apply_job) => {
+              self.apply_jobs.push(apply_job);
+              apply_jobs_in += 1;
+            },
+            _ => {
+              panic!("Received unexpected result in WorldPool");
+            },
+          }
+        }
+        assert_eq!(merge_jobs_in, jobs_out);
+
+        while self.main_jobs.len() > 0 {
+          match self.main_jobs.pop().unwrap() {
+            WorldJob::Apply(mut apply) => {
+              World::apply_answers(&mut *apply);
+              self.apply_jobs.push(apply);
+              apply_jobs_in += 1;
+            },
+            _ => {
+            },
+          }
+        }
+
+        while apply_jobs_in < jobs_out {
+          let job = self.result_rx.recv().unwrap().unwrap_apply();
+          self.apply_jobs.push(job);
+          apply_jobs_in += 1;
+        }
+        assert_eq!(apply_jobs_in, jobs_out);
+      }
+      else {
+        let mut j = 0;
+        let mut jobs_out = 0;
+        let len = particles.len();
+        while j < len {
+          let mut job = self.apply_job();
+          job.start = j;
+          job.end = if j + PARTICLES_PER_JOB > len {len} else {j + PARTICLES_PER_JOB};
+          job.dt2 = dt2;
+          job.particles = particles.as_mut_ptr();
+          job.triggered = triggered.as_mut_ptr();
+          job.answer_positions = solutions.as_mut_ptr();
+          job.answer_triggers = triggers.as_mut_ptr();
+          self.send_apply(job);
+          jobs_out += 1;
+          j += PARTICLES_PER_JOB;
+        }
+
+        let mut jobs_in = 0;
+
+        while self.main_jobs.len() > 0 {
+          match self.main_jobs.pop().unwrap() {
+            WorldJob::Apply(mut apply) => {
+              World::apply_answers(&mut *apply);
+              self.apply_jobs.push(apply);
+              jobs_in += 1;
+            },
+            _ => {
+            },
+          }
+        }
+
+        while jobs_in < jobs_out {
+          let job = self.result_rx.recv().unwrap().unwrap_apply();
+          self.apply_jobs.push(job);
+          jobs_in += 1;
+        }
+      }
+
+      // handle(&mut solutions, &mut triggers);
       self.positions.push((solutions, triggers));
     }
-    for i in 0..self.threads {
-      self.positions_rx_tx.send(self.positions.pop().unwrap());
+    {
+      let (solutions, triggers) = self.positions.pop().unwrap();
+      self.maybe_solutions = Some(solutions);
+      self.maybe_triggers = Some(triggers);
+    }
+    for i in 1..self.threads {
+      let answers = self.positions.pop().unwrap();
+      self.job_txs[i].send(WorldJob::TakeAnswers(answers)).unwrap();
+    }
+
+    // self._send_all(WorldJob::ShowAnswers);
+    // {
+    //   let (mut solutions, mut triggers) = self.positions_rx.recv().unwrap();
+    //   for _ in 0..(self.threads - 1) {
+    //     let (mut answer_positions, mut answer_triggers) = self.positions_rx.recv().unwrap();
+    //     World::merge_solutions(solutions.as_mut_ptr(), triggers.as_mut_ptr(), &mut answer_positions, &mut answer_triggers);
+    //     self.positions.push((answer_positions, answer_triggers));
+    //   }
+    //   {
+    //     let mut apply_job = ApplyJob {
+    //       start: 0,
+    //       end: particles.len(),
+    //       dt2: dt2,
+    //       particles: particles.as_mut_ptr(),
+    //       triggered: triggered.as_mut_ptr(),
+    //       answer_positions: solutions.as_mut_ptr(),
+    //       answer_triggers: triggers.as_mut_ptr(),
+    //     };
+    //     World::apply_answers(&mut apply_job);
+    //   }
+    //   // handle(&mut solutions, &mut triggers);
+    //   self.positions.push((solutions, triggers));
+    // }
+    // {
+    //   let (solutions, triggers) = self.positions.pop().unwrap();
+    //   self.maybe_solutions = Some(solutions);
+    //   self.maybe_triggers = Some(triggers);
+    // }
+    // for i in 1..self.threads {
+    //   let answers = self.positions.pop().unwrap();
+    //   self.job_txs[i].send(WorldJob::TakeAnswers(answers)).unwrap();
+    //   // self.positions_rx_txs[i].send().unwrap();
+    // }
+
+    // for i in 0..self.threads {
+    //   self.job_txs[i].send(WorldJob::ShowAnswers).unwrap();
+    // }
+    // for _ in 0..self.threads {
+    //   let (mut solutions, mut triggers) = self.positions_rx.recv().unwrap();
+    //   handle(&mut solutions, &mut triggers);
+    //   self.positions.push((solutions, triggers));
+    // }
+    // for i in 0..self.threads {
+    //   self.positions_rx_txs[i].send(self.positions.pop().unwrap()).unwrap();
+    // }
+  }
+}
+
+impl Drop for WorldPool {
+  fn drop(&mut self) {
+    for i in 1..self.threads {
+      self.job_txs[i].send(WorldJob::ShutDown).unwrap();
     }
   }
 }
