@@ -2,7 +2,7 @@ extern crate glfw;
 extern crate time;
 extern crate rand;
 #[macro_use]
-extern crate phrust;
+extern crate ph;
 
 use std::any::Any;
 use std::collections::vec_deque::VecDeque;
@@ -31,12 +31,12 @@ use std::f64;
 // #[macro_use]
 // use phrust;
 // #[macro_use]
-use phrust::math::*;
-use phrust::world;
-use phrust::world::*;
-use phrust::world_renderer;
-use phrust::particle;
-use phrust::particle::Particle;
+use ph::math::*;
+use ph::world;
+use ph::world::*;
+use ph::world_renderer;
+use ph::particle;
+use ph::particle::Particle;
 
 fn now() -> f64 {
   let spec = get_time();
@@ -379,7 +379,7 @@ pub fn main() {
   window.set_cursor_pos_polling(true);
   window.make_current();
 
-  world_renderer::WorldRenderer::init_gl(|s| window.get_proc_address(s) as *const _);
+  world_renderer::GLDriver::init(|s| window.get_proc_address(s) as *const _);
 
   const MAX_FRAMES : usize = 60;
   let mut frames = [0f64; 60];
@@ -432,7 +432,8 @@ pub fn main() {
       frame_index = 0;
     }
 
-    renderer.draw(&world);
+    renderer.update(&world);
+    renderer.draw();
 
     window.swap_buffers();
   }

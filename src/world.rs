@@ -4,7 +4,6 @@ use std::slice;
 use std::iter;
 use std::usize;
 use std::f32;
-use std::f32::consts;
 use std::ptr;
 // use std::boxed::FnBox;
 
@@ -12,11 +11,8 @@ use std::mem;
 // use std::marker::Reflect;
 // use std::raw::TraitObject;
 use std::any::Any;
-use std::ops::{Deref, DerefMut};
-use std::borrow::{Borrow, BorrowMut};
 use std::thread;
-use std::sync::{Mutex, Arc};
-use std::sync::mpsc::{SyncSender, Sender, Receiver, sync_channel, channel};
+use std::sync::mpsc::{Sender, Receiver, channel};
 
 use super::math::*;
 
@@ -58,21 +54,14 @@ pub struct World {
 }
 
 enum WorldChange {
-  AddParticle(Particle),
-  RemoveParticle(usize),
-  AddEffect(Box<WorldEffect + Sized + 'static>),
   RemoveEffect(*mut WorldEffect),
 }
 
+#[allow(dead_code)]
 pub struct WorldEditor<'a> {
   world: &'a mut World,
   world_evil: *mut World,
   // changes: Vec<WorldChange>,
-}
-
-pub struct WorldEffectBox<T : ?Sized> where T : WorldEffect {
-  world_ptr: *mut World,
-  effect: Box<T>,
 }
 
 pub struct WorldEffectRef {
@@ -80,7 +69,7 @@ pub struct WorldEffectRef {
 }
 
 impl WorldEffectRef {
-  pub fn as_mut<'a>(&'a mut self, world: &'a mut World) -> &'a mut WorldEffect {
+  pub fn as_mut<'a>(&'a mut self, _: &'a mut World) -> &'a mut WorldEffect {
     unsafe { mem::transmute(self.ptr) }
   }
 
@@ -161,7 +150,6 @@ enum WorldJob {
   IntegrateDone,
   Merge(Box<MergeJob>),
   Apply(Box<ApplyJob>),
-  MergeAnswers((Vec<Positions>, Vec<Triggers>)),
   TakeAnswers((Vec<Positions>, Vec<Triggers>)),
   ShowAnswers,
   ShutDown,
@@ -264,14 +252,12 @@ struct WorldPool {
   merge_jobs: Vec<Box<MergeJob>>,
   apply_jobs: Vec<Box<ApplyJob>>,
   positions: Vec<(Vec<Positions>, Vec<Triggers>)>,
-  
-  // job_tx: Sender<WorldJob>,
+
   next_thread: usize,
   maybe_solutions: Option<Vec<Positions>>,
   maybe_triggers: Option<Vec<Triggers>>,
   main_jobs: Vec<WorldJob>,
   job_txs: Vec<Sender<WorldJob>>,
-  particles_tx: Sender<Box<ParticleJob>>,
   particles_rx: Receiver<Box<ParticleJob>>,
   integrate_tx: Sender<Box<IntegrateJob>>,
   integrate_rx: Receiver<Box<IntegrateJob>>,
@@ -279,7 +265,6 @@ struct WorldPool {
   result_rx: Receiver<WorldJob>,
   positions_tx: Sender<(Vec<Positions>, Vec<Triggers>)>,
   positions_rx: Receiver<(Vec<Positions>, Vec<Triggers>)>,
-  positions_rx_txs: Vec<Sender<(Vec<Positions>, Vec<Triggers>)>>,
 }
 
 impl Positions {
@@ -318,10 +303,6 @@ impl Positions {
 }
 
 impl Triggers {
-  fn len(&self) -> usize {
-    self.triggered.len()
-  }
-
   fn add_trigger(&mut self, id: usize) {
     self.used = true;
     self.triggered.push(id);
@@ -375,7 +356,6 @@ impl<'a> WorldEditor<'a> {
     WorldEditor {
       world: world,
       world_evil: world_evil,
-      // changes: Vec::<WorldChange>::new(),
     }
   }
 
@@ -397,70 +377,6 @@ impl<'a> WorldEditor<'a> {
     unsafe { &mut *self.world_evil }.iter_triggered(trigger)
   }
 }
-
-// impl<'a> Drop for WorldEditor<'a> {
-//   fn drop(&mut self) {
-//     for effect_ptr in self.remove_effects.split_off(0).into_iter() {
-//       unsafe { &mut *self.world_evil }.remove_effect(unsafe { &mut *effect_ptr })
-//     }
-//       match change {
-//         WorldChange::AddParticle(mut particle) => {
-//           unsafe { &mut *self.world_evil }.add_particle(&mut particle);
-//         },
-//         WorldChange::RemoveParticle(id) => {
-//           unsafe { &mut *self.world_evil }.remove_particle(&mut Particle {
-//             id: id,
-//             .. Default::default()
-//           });
-//         },
-//         WorldChange::AddEffect(effect) => {
-//           unsafe { &mut *self.world_evil }.add_effect(effect);
-//         },
-//         WorldChange::RemoveEffect(effect_ptr) => {
-//           unsafe { &mut *self.world_evil }.remove_effect(unsafe { &mut *effect_ptr });
-//         },
-//       }
-//     }
-//   }
-// }
-
-// impl<T> WorldEffectBox<T> where T : WorldEffect {
-//   fn new(world: &mut World, effect: Box<T>) -> WorldEffectBox<T> {
-//     WorldEffectBox {
-//       world_ptr: &mut *world as *mut World,
-//       effect: effect,
-//     }
-//   }
-//   //
-//   // fn remove(&mut self) {
-//   //   unsafe { &mut *self.world_ptr }.remove_effect(&*self.effect as *const WorldEffect);
-//   // }
-// }
-//
-// impl<T> Deref for WorldEffectBox<T> where T : WorldEffect {
-//   type Target = T;
-//   fn deref(&self) -> &T {
-//     self.effect.deref()
-//   }
-// }
-//
-// impl<T> DerefMut for WorldEffectBox<T> where T : WorldEffect {
-//   fn deref_mut(&mut self) -> &mut T {
-//     self.effect.deref_mut()
-//   }
-// }
-//
-// impl<T> Borrow<T> for WorldEffectBox<T> where T : WorldEffect {
-//   fn borrow(&self) -> &T {
-//     self.effect.borrow()
-//   }
-// }
-//
-// impl<T> BorrowMut<T> for WorldEffectBox<T> where T : WorldEffect {
-//   fn borrow_mut(&mut self) -> &mut T {
-//     self.effect.borrow_mut()
-//   }
-// }
 
 impl World {
   pub fn new(bb: BB) -> World {
@@ -613,7 +529,6 @@ impl World {
         WorldChange::RemoveEffect(effect_ptr) => {
           self._remove_effect(unsafe { &mut *effect_ptr });
         },
-        _ => {},
       }
     }
   }
@@ -749,8 +664,8 @@ impl World {
       //   // self.apply_solutions(positions, triggers);
       // });
 
-      let particles = unsafe { &mut self.particles };
-      let triggered = unsafe { &mut self.triggered };
+      let particles = &mut self.particles;
+      let triggered = &mut self.triggered;
       pool.apply_solutions(self.dt2, particles, triggered);
     }
 
@@ -939,28 +854,6 @@ impl World {
     }
   }
 
-  fn merge_solutions(s: *mut Positions, t: *mut Triggers, positions: &mut Vec<Positions>, triggers: &mut Vec<Triggers>) {
-    let mut i : isize = 0;
-    let l : isize = positions.len() as isize;
-    let p = positions.as_mut_ptr();
-    let pt = triggers.as_mut_ptr();
-    while i < l {
-      let position = unsafe { &mut *p.offset(i) as &mut Positions };
-      if position.solutions > 0.0 {
-        unsafe { &mut *s.offset(i) as &mut Positions }.merge(position);
-        position.clear();
-      }
-      else {
-        let triggers = unsafe { &mut *pt.offset(i) as &mut Triggers };
-        if triggers.used {
-          unsafe { &mut *t.offset(i) as &mut Triggers }.merge(triggers);
-          triggers.clear();
-        }
-      }
-      i += 1;
-    }
-  }
-
   fn apply_answers(apply: &mut ApplyJob) {
     World::apply_solutions(apply.start, apply.end, apply.dt2, apply.particles, apply.triggered, apply.answer_positions, apply.answer_triggers);
   }
@@ -1070,7 +963,6 @@ impl WorldPool {
     let (integrate_tx, integrate_rx) = channel();
     let (result_tx, result_rx) = channel();
     let (positions_tx, positions_rx) = channel();
-    let mut positions_rx_txs = Vec::new();
 
     let threads = num_cpus::get();
     // let threads = 1;
@@ -1088,8 +980,6 @@ impl WorldPool {
       let integrate_tx = integrate_tx.clone();
       let result_tx = result_tx.clone();
       let positions_tx = positions_tx.clone();
-      let (positions_rx_tx, positions_tx_rx) = channel();
-      positions_rx_txs.push(positions_rx_tx);
       thread::Builder::new().name("World thread".to_string()).spawn(move || {
         let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
         let mut maybe_triggers = Some(Vec::<Triggers>::new());
@@ -1115,19 +1005,12 @@ impl WorldPool {
 
             WorldJob::Merge(mut merge) => {
               World::_merge_answers(&mut *merge);
-              result_tx.send(WorldJob::Merge(merge));
+              result_tx.send(WorldJob::Merge(merge)).unwrap();
             },
 
             WorldJob::Apply(mut apply) => {
               World::apply_answers(&mut *apply);
-              result_tx.send(WorldJob::Apply(apply));
-            },
-
-            WorldJob::MergeAnswers((mut position_answers, mut trigger_answers)) => {
-              if let (Some(solutions), Some(triggers)) = (maybe_solutions.as_mut(), maybe_triggers.as_mut()) {
-                World::merge_solutions(solutions.as_mut_ptr(), triggers.as_mut_ptr(), &mut position_answers, &mut trigger_answers);
-                positions_tx.send((position_answers, trigger_answers));
-              }
+              result_tx.send(WorldJob::Apply(apply)).unwrap();
             },
 
             WorldJob::TakeAnswers((solutions, triggers)) => {
@@ -1150,7 +1033,7 @@ impl WorldPool {
             },
           }
         }
-      });
+      }).unwrap();
     }
 
     WorldPool {
@@ -1165,7 +1048,6 @@ impl WorldPool {
       maybe_triggers: Some(Vec::new()),
       main_jobs: Vec::new(),
       job_txs: job_txs,
-      particles_tx: particles_tx,
       particles_rx: particles_rx,
       integrate_tx: integrate_tx,
       integrate_rx: integrate_rx,
@@ -1173,7 +1055,6 @@ impl WorldPool {
       result_rx: result_rx,
       positions_tx: positions_tx,
       positions_rx: positions_rx,
-      positions_rx_txs: positions_rx_txs,
     }
   }
 

@@ -2,7 +2,7 @@ use std::f32;
 use std::fmt;
 
 use super::v2::V2;
-use super::base5::b5;
+use super::base5::B5;
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct BB {
@@ -173,10 +173,10 @@ pub struct BBId {
 
 impl BBId {
   pub fn parent(self) -> BBId {
-    let bit = b5::from(self.id).highest_bit().value();
-    let parentId = self.id - (b5::from(bit) << (b5::from(self.id).length() - 1)).value();
+    let bit = B5::from(self.id).highest_bit().value();
+    let parent_id = self.id - (B5::from(bit) << (B5::from(self.id).length() - 1)).value();
     BBId {
-      id: parentId,
+      id: parent_id,
       bb: match bit {
         // top left
         1 => BB { l: self.bb.l, b: self.bb.b * 2.0 - self.bb.t, r: self.bb.r * 2.0 - self.bb.l, t: self.bb.t },
@@ -189,7 +189,7 @@ impl BBId {
   }
 
   pub fn tl(self) -> BBId {
-    let id = self.id + (b5::from(1) << b5::from(self.id).length()).value();
+    let id = self.id + (B5::from(1) << B5::from(self.id).length()).value();
     BBId {
       id: id,
       bb: BB { l: self.bb.l, b: self.bb.b + (self.bb.t - self.bb.b) / 2.0, r: self.bb.r - (self.bb.r - self.bb.l) / 2.0, t: self.bb.t },

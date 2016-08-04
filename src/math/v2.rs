@@ -1,9 +1,6 @@
 use std::ops::*;
 use std::f32;
-use std::f32::EPSILON;
 use std::fmt;
-// use std::num::Float;
-use std::default::Default;
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct V2 {
@@ -92,7 +89,7 @@ impl_unary_op!{ Neg, neg }
 
 pub const V2_ZERO : V2 = V2 { x: 0f32, y: 0f32 };
 
-pub fn V2_zero() -> V2 {
+pub fn v2_zero() -> V2 {
   V2::zero()
 }
 

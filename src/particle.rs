@@ -32,9 +32,6 @@ pub struct Particle {
   // pub old_ddvt_position: V2,
 }
 
-const LAST_POS_MUL : f32 = -0.999;
-const POS_MUL : f32 = 1.999;
-
 // impl Deref for ParticleId {
 //
 // }

@@ -13,38 +13,6 @@ pub struct Collision {
   pub pqt: f32,
 }
 
-fn bad_rt(v: f32) -> f32 {
-  let mut top_rt = v;
-  let mut bot_rt = 0.0;
-  let mut rt = v;
-  if v == 0.0 {}
-  else if v < 1.0 {
-    bot_rt = v;
-    top_rt = 1.0;
-    while rt * rt > v * 1.25 || rt * rt < v * 0.75 {
-      if rt * rt < v {
-        bot_rt = rt;
-      }
-      else {
-        top_rt = rt;
-      }
-      rt = (top_rt + bot_rt) / 2.0;
-    }
-  }
-  else {
-    while rt * rt > v * 1.25 || rt * rt < v * 0.75 {
-      if rt * rt < v {
-        bot_rt = rt;
-      }
-      else {
-        top_rt = rt;
-      }
-      rt = (top_rt + bot_rt) / 2.0;
-    }
-  }
-  rt
-}
-
 impl Collision {
   // #[inline]
   // pub fn test(a: &Particle, b: &Particle,
@@ -140,7 +108,7 @@ impl Collision {
       let pos_diff = a.position - b.position;
       let ingress_sq = (a.position - b.position).mag2();
       let ingress = ingress_sq.sqrt() + EPSILON + (a.radius + b.radius) / 50.0;
-      let pqt = (((a.radius + b.radius) / ingress).powf(1.5) - 1.0f32);
+      let pqt = ((a.radius + b.radius) / ingress).powf(1.5) - 1.0f32;
       let total_mass = (a.mass + b.mass) / pqt;
       let a_mass_coeff = b.mass / total_mass;
       let b_mass_coeff = a.mass / total_mass;

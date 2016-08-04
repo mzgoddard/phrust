@@ -1,7 +1,6 @@
 extern crate time;
 extern crate rand;
 
-#[macro_export]
 #[macro_use]
 pub mod math;
 pub mod particle;

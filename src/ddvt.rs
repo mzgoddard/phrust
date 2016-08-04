@@ -4,11 +4,8 @@ use std::usize;
 use std::f32;
 use std::any::Any;
 use std::fmt;
-use std::collections::LinkedList;
 use std::iter;
-use std::slice;
 use std::thread;
-use std::sync::*;
 use std::sync::mpsc::*;
 
 use super::math::*;
@@ -28,14 +25,8 @@ const MIN_LEAF_VOLUME : usize = 224;
 
 const PARTICLES_PER_JOB : usize = 4096;
 
-struct Volume {
-  bb: BB,
-  len: usize,
-  particles: [Particle; 256],
-}
-
 #[derive(Default)]
-struct VirtualVolume {
+pub struct VirtualVolume {
   bb: BB,
   center: V2,
   contained: Vec<usize>,
@@ -72,7 +63,6 @@ pub struct VolumeRoot {
   bb_clone: Vec<OldNew>,
 
   threads: usize,
-  update_signal: Arc<(Mutex<usize>, Condvar)>,
   job_txs: Vec<Sender<VolumeJob>>,
   result_tx: Sender<VolumeResult>,
   result_rx: Receiver<VolumeResult>,
@@ -81,27 +71,20 @@ pub struct VolumeRoot {
 enum VolumeJob {
   CopyBB { start: usize, end: usize, old_new: *mut OldNew, particles: *const Particle },
   CopyOld { start: usize, end: usize, old_new: *mut OldNew },
-  UpdateStart(usize),
-  UpdateProgress(usize),
   UpdateUncontained { done: usize, volume: *mut QuadTree<VirtualVolume>, old_new: *const Vec<OldNew> },
   MoveOutOfDate { done: usize, volume: *mut QuadTree<VirtualVolume>, record: *mut QuadTree<VirtualRecord>, old_new: *mut Vec<OldNew> },
-  Shutdown,
 }
 
 unsafe impl Send for VolumeJob {}
 
 enum VolumeResult {
   Done,
-  UpdateUncontainedDone,
-  MoveOutOfDateDone,
   UpdateUncontainedCompleted(usize),
   MoveOutOfDateCompleted(usize),
-  Completed(usize),
   MainThreadCopyBB { start: usize, end: usize, old_new: *mut OldNew, particles: *const Particle },
   MainThreadCopyOld { start: usize, end: usize, old_new: *mut OldNew },
   MainThreadUpdateUncontained { done: usize, volume: *mut QuadTree<VirtualVolume>, old_new: *const Vec<OldNew> },
   MainThreadMoveOutOfDate { done: usize, volume: *mut QuadTree<VirtualVolume>, record: *mut QuadTree<VirtualRecord>, old_new: *mut Vec<OldNew> },
-  Deeper,
   BBDone,
 }
 
@@ -119,20 +102,11 @@ impl fmt::Debug for VolumeResult {
       &VolumeResult::Done => {
         write!(f, "Done")
       },
-      &VolumeResult::UpdateUncontainedDone => {
-        write!(f, "UpdateUncontainedDone")
-      },
-      &VolumeResult::MoveOutOfDateDone => {
-        write!(f, "MoveOutOfDateDone")
-      },
       &VolumeResult::UpdateUncontainedCompleted(_) => {
         write!(f, "UpdateUncontainedCompleted")
       },
       &VolumeResult::MoveOutOfDateCompleted(_) => {
         write!(f, "MoveOutOfDateCompleted")
-      },
-      &VolumeResult::Completed(_) => {
-        write!(f, "Completed")
       },
       &VolumeResult::MainThreadCopyBB { start: _, end: _, old_new: _, particles: _, } => {
         write!(f, "MainThreadCopyBB")
@@ -146,9 +120,6 @@ impl fmt::Debug for VolumeResult {
       &VolumeResult::MainThreadMoveOutOfDate { done: _, volume: _, record: _, old_new: _, } => {
         write!(f, "MainThreadMoveOutOfDate")
       },
-      &VolumeResult::Deeper => {
-        write!(f, "Deeper")
-      },
       &VolumeResult::BBDone => {
         write!(f, "BBDone")
       },
@@ -161,6 +132,7 @@ struct RecordStack<'a> {
 }
 
 struct RecordStackIter<'a> {
+  #[allow(dead_code)]
   origin: &'a mut QuadTree<VirtualRecord>,
   record: Option<*mut QuadTree<VirtualRecord>>,
 }
@@ -175,15 +147,11 @@ impl<'a> RecordStack<'a> {
   fn iter_mut(&mut self) -> RecordStackIter {
     RecordStackIter::new(self.record)
   }
-
-  fn last_mut(&mut self) -> &mut VirtualRecord {
-    &mut self.record.value
-  }
 }
 
 impl<'a> RecordStackIter<'a> {
   fn new(tree: &'a mut QuadTree<VirtualRecord>) -> RecordStackIter<'a> {
-    let record_evil = unsafe { &mut *tree as *mut QuadTree<VirtualRecord> };
+    let record_evil = &mut *tree as *mut QuadTree<VirtualRecord>;
     RecordStackIter {
       origin: tree,
       record: Some(record_evil)
@@ -206,46 +174,12 @@ impl<'a> Iterator for RecordStackIter<'a> {
 }
 
 impl VirtualVolume {
-  fn contains(&self, particle: &Particle) -> bool {
-    self.bb.contains(particle.bbox)
-  }
-
   fn len(&self) -> usize {
     self.contained.len() + self.uncontained.len() + self.contained_triggers.len() + self.uncontained_triggers.len()
-  }
-
-  fn append_uncontained(&mut self, other: &VirtualVolume) {
-    for &particle_id in other.uncontained.iter() {
-      if index_in_uncontained(particle_id, &other.uncontained) == usize::MAX &&
-        index_in_uncontained(particle_id, &other.contained) == usize::MAX
-      {
-        self.uncontained.push(particle_id);
-      }
-    }
   }
 }
 
 impl QuadTree<VirtualVolume> {
-  fn walk_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
-    self._walk_mut(&mut handle);
-  }
-
-  fn _walk_mut<F>(&mut self, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
-    if let Some(ref mut children) = self.children {
-      let c = children.as_mut_ptr();
-      macro_rules! ptr_offset {
-        ($p : expr, $i : expr) => {
-          unsafe { &mut *$p.offset($i as isize) }
-        }
-      }
-      ptr_offset!(c, 0)._walk_mut(handle);
-      ptr_offset!(c, 1)._walk_mut(handle);
-      ptr_offset!(c, 2)._walk_mut(handle);
-      ptr_offset!(c, 3)._walk_mut(handle);
-    }
-    handle(self);
-  }
-
   fn walk_rev_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>) {
     self._walk_rev_mut(&mut handle);
   }
@@ -386,40 +320,6 @@ impl QuadTree<VirtualVolume> {
     }
   }
 
-  fn walk_with_record_stack_rev_mut(&mut self, record: &mut QuadTree<VirtualRecord>, handle: &mut FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>)) {
-    // let l = record_stack.len();
-    // record_stack.push(unsafe { &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord });
-    // unsafe {
-    //   if l == record_stack.capacity() {
-    //     record_stack.reserve(l * 2);
-    //   }
-    //   record_stack.set_len(l + 1);
-    //   *(*record_stack).as_mut_ptr().offset(l as isize) = &mut *(&mut record.value as *mut VirtualRecord) as &mut VirtualRecord;
-    // }
-    handle(self, record);
-    if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut self.children, &mut record.children) {
-      let vc = volume_children.as_mut_ptr();
-      let rc = record_children.as_mut_ptr();
-      macro_rules! ptr_offset {
-        ($p : expr, $i : expr) => {
-          unsafe { &mut *$p.offset($i as isize) }
-        }
-      }
-      ptr_offset!(vc, 0).walk_with_record_stack_rev_mut(ptr_offset!(rc, 0), handle);
-      ptr_offset!(vc, 1).walk_with_record_stack_rev_mut(ptr_offset!(rc, 1), handle);
-      ptr_offset!(vc, 2).walk_with_record_stack_rev_mut(ptr_offset!(rc, 2), handle);
-      ptr_offset!(vc, 3).walk_with_record_stack_rev_mut(ptr_offset!(rc, 3), handle);
-      // volume_children[0].walk_with_record_stack_rev_mut(&mut record_children[0], handle);
-      // volume_children[1].walk_with_record_stack_rev_mut(&mut record_children[1], handle);
-      // volume_children[2].walk_with_record_stack_rev_mut(&mut record_children[2], handle);
-      // volume_children[3].walk_with_record_stack_rev_mut(&mut record_children[3], handle);
-    }
-    // unsafe {
-    //   record_stack.set_len(l);
-    // }
-    // record_stack.pop();
-  }
-
   fn walk_with_record_mut<F>(&mut self, record: &mut QuadTree<VirtualRecord>, handle: &mut F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {
     if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut self.children, &mut record.children) {
       let vc = volume_children.as_mut_ptr();
@@ -440,8 +340,6 @@ impl QuadTree<VirtualVolume> {
 
 impl TreeSplitableWith for VirtualVolume {
   fn tree_split_with(&mut self, children: &mut [&mut VirtualVolume], data: &mut Any) {
-    let uncontained_len = self.uncontained.len();
-
     let particles = data.downcast_mut::<Vec<Particle>>().unwrap();
     children[0].bb = self.bb.tl();
     children[0].center = children[0].bb.center();
@@ -630,12 +528,6 @@ impl TreeJoinableWith for VirtualVolume {
   }
 }
 
-impl VirtualRecord {
-  fn contains(&self, particle: &Particle) -> bool {
-    self.bb.contains(particle.bbox)
-  }
-}
-
 impl TreeSplitable for VirtualRecord {
   fn tree_split(&mut self, _: &mut [&mut VirtualRecord]) {
   }
@@ -644,14 +536,6 @@ impl TreeSplitable for VirtualRecord {
 impl TreeJoinable for VirtualRecord {
   fn tree_join(&mut self, _: &[&VirtualRecord]) {
   }
-}
-
-fn is_leaf(node: &&mut QuadTree<VirtualVolume>) -> bool {
-  node.is_leaf()
-}
-
-fn is_not_leaf(node: &&mut QuadTree<VirtualVolume>) -> bool {
-  !node.is_leaf()
 }
 
 fn index_in_uncontained(id: usize, uncontained: &Vec<usize>) -> usize {
@@ -688,7 +572,6 @@ impl VolumeRoot {
     let (result_tx, result_rx) = channel();
     let threads = num_cpus::get();
     // let threads = 1;
-    let update_signal = Arc::new((Mutex::new(0), Condvar::new()));
 
     for _ in 0..threads {
       let (job_tx, job_rx) = channel();
@@ -699,8 +582,6 @@ impl VolumeRoot {
       let job_txs = job_txs.clone();
       let job_rx = job_rxs.pop().unwrap();
       let result_tx = result_tx.clone();
-      let update_signal = update_signal.clone();
-      let main_thread = thread::current();
 
       thread::Builder::new().name("DBVT thread".to_string()).spawn(move || {
         let mut removed = Vec::<usize>::new();
@@ -708,12 +589,9 @@ impl VolumeRoot {
         let mut deeper = Vec::<usize>::new();
         let mut deeper_triggers = Vec::<usize>::new();
 
-        let mut update_completed = 0;
-        let mut update_todo = 0;
-
         loop {
           match job_rx.recv().unwrap() {
-            VolumeJob::CopyBB { start: start, end: end, particles: particles, old_new: old_new } => {
+            VolumeJob::CopyBB { start, end, particles, old_new } => {
               let mut i = start;
               while i < end {
                 unsafe {
@@ -724,7 +602,7 @@ impl VolumeRoot {
               }
               result_tx.send(VolumeResult::BBDone).unwrap();
             },
-            VolumeJob::CopyOld { start: start, end: end, old_new: old_new } => {
+            VolumeJob::CopyOld { start, end, old_new } => {
               let mut i = start;
               while i < end {
                 unsafe {
@@ -735,20 +613,7 @@ impl VolumeRoot {
               }
               result_tx.send(VolumeResult::BBDone).unwrap();
             },
-            VolumeJob::UpdateStart(todo) => {
-              update_completed = 0;
-              update_todo = todo;
-              result_tx.send(VolumeResult::Done).unwrap();
-            },
-            VolumeJob::UpdateProgress(completed) => {
-              update_completed += completed;
-              // println!("{} / {}", update_completed, update_todo);
-              if update_completed == update_todo {
-                result_tx.send(VolumeResult::Completed(update_todo)).unwrap();
-                main_thread.unpark();
-              }
-            },
-            VolumeJob::UpdateUncontained { done: mut done, old_new: old_new, volume: volume, } => {
+            VolumeJob::UpdateUncontained { mut done, old_new, volume, } => {
               if let Some(ref mut children) = unsafe { &mut *volume }.children {
                 VolumeRoot::_update_leaves_uncontained(unsafe { &mut *volume }, unsafe { &*old_new });
                 done += 1;
@@ -763,7 +628,7 @@ impl VolumeRoot {
                       done: done,
                       volume: unsafe { c.offset(i as isize) },
                       old_new: old_new,
-                    });
+                    }).unwrap();
                   }
                   else {
                     job_txs[t].send(VolumeJob::UpdateUncontained {
@@ -772,31 +637,18 @@ impl VolumeRoot {
                       old_new: old_new,
                     }).unwrap();
                   }
-                  // job_txs[t].send(VolumeJob::UpdateUncontained {
-                  //   done: done,
-                  //   volume: unsafe { c.offset(i as isize) },
-                  //   old_new: old_new,
-                  // }).unwrap();
                   done = 0;
                   t = if t == threads - 1 {0} else {t + 1};
                 }
                 if done > 0 {
                   result_tx.send(VolumeResult::UpdateUncontainedCompleted(done)).unwrap();
                 }
-                // result_tx.send(VolumeResult::UpdateUncontainedDone).unwrap();
               }
               else if done > 0 {
                 result_tx.send(VolumeResult::UpdateUncontainedCompleted(done)).unwrap();
-              //   if cfg!(target_os="ios") {
-              //     result_tx.send(VolumeResult::Completed(done)).unwrap();
-              //   }
-              //   else {
-              //     result_tx.send(VolumeResult::Completed(done)).unwrap();
-              //     // job_txs[0].send(VolumeJob::UpdateProgress(done)).unwrap();
-              //   }
               }
             },
-            VolumeJob::MoveOutOfDate { done: mut done, volume: volume, record: record, old_new: old_new } => {
+            VolumeJob::MoveOutOfDate { mut done, volume, record, old_new } => {
               VolumeRoot::_update_remove_out_of_date_contained(thread_id, unsafe { &mut *volume }, unsafe { &mut *record }, unsafe { &mut *old_new }, &mut removed, &mut deeper, &mut removed_triggers, &mut deeper_triggers);
               done += 1;
               if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut unsafe { &mut *volume }.children, &mut unsafe { &mut *record }.children) {
@@ -827,21 +679,10 @@ impl VolumeRoot {
               else if done > 0 {
                 result_tx.send(VolumeResult::MoveOutOfDateCompleted(done)).unwrap();
               }
-              //   if cfg!(target_os="ios") {
-              //     result_tx.send(VolumeResult::Completed(done)).unwrap();
-              //   }
-              //   else {
-              //     result_tx.send(VolumeResult::Completed(done)).unwrap();
-              //     // job_txs[0].send(VolumeJob::UpdateProgress(done)).unwrap();
-              //   }
-              // }
-            },
-            VolumeJob::Shutdown => {
-              break;
             },
           }
         }
-      });
+      }).unwrap();
     }
 
     let mut record_thread_vec = Vec::new();
@@ -865,7 +706,6 @@ impl VolumeRoot {
       bb_clone: Vec::new(),
 
       threads: threads,
-      update_signal: update_signal,
       job_txs: job_txs,
       result_tx: result_tx,
       result_rx: result_rx,
@@ -919,7 +759,7 @@ impl VolumeRoot {
     while jobs_in < jobs_out {
       match self.result_rx.recv().unwrap() {
         VolumeResult::BBDone => {},
-        VolumeResult::MainThreadCopyBB { start: start, end: end, particles: particles, old_new: old_new } => {
+        VolumeResult::MainThreadCopyBB { start, end, particles, old_new } => {
           let mut i = start;
           while i < end {
             unsafe {
@@ -972,7 +812,7 @@ impl VolumeRoot {
     while jobs_in < jobs_out {
       match self.result_rx.recv().unwrap() {
         VolumeResult::BBDone => {},
-        VolumeResult::MainThreadCopyOld { start: start, end: end, old_new: old_new } => {
+        VolumeResult::MainThreadCopyOld { start, end, old_new } => {
           let mut i = start;
           while i < end {
             unsafe {
@@ -1154,7 +994,7 @@ impl VolumeRoot {
   }
 
   #[inline(never)]
-  fn update_remove_out_of_date_contained(&mut self, particles: &mut Vec<Particle>) {
+  fn update_remove_out_of_date_contained(&mut self, _: &mut Vec<Particle>) {
     let mut bb_clones = unsafe { &mut *(&mut self.bb_clone as *mut Vec<OldNew>) as &mut Vec<OldNew> };
 
     let mut removed = Vec::<usize>::new();
@@ -1162,45 +1002,24 @@ impl VolumeRoot {
     let mut deeper = Vec::<usize>::new();
     let mut deeper_triggers = Vec::<usize>::new();
 
-    // self.walk_with_record_stack_rev_mut(&mut |vvolume, record| {
-    //   VolumeRoot::_update_remove_out_of_date_contained(0, vvolume, record, bb_clones, &mut removed, &mut deeper, &mut removed_triggers, &mut deeper_triggers);
-    // });
-
-    let mut done = 0;
     let mut todo = 0;
     self.root.walk_rev_mut(|_| {todo += 1;});
-
-    // self.job_txs[0].send(VolumeJob::UpdateStart(todo)).unwrap();
-    // match self.result_rx.recv().unwrap() {
-    //   VolumeResult::Done => {},
-    //   _ => {
-    //     panic!("Unexpected result");
-    //   },
-    // }
 
     let mut update_completed = 0;
 
     self.result_tx.send(VolumeResult::MainThreadMoveOutOfDate {
       done: 0,
-      volume: unsafe { &mut self.root },
-      record: unsafe { &mut self.records },
-      old_new: unsafe { &mut *bb_clones },
+      volume: &mut self.root,
+      record: &mut self.records,
+      old_new: &mut *bb_clones,
     }).unwrap();
 
     while update_completed < todo {
       match self.result_rx.recv().unwrap() {
-        // VolumeResult::MoveOutOfDateDone => {
-        //   update_completed += 1;
-        //   println!("MoveOutOfDate Done {} / {}", update_completed, todo);
-        // },
         VolumeResult::MoveOutOfDateCompleted(completed) => {
           update_completed += completed;
-          // panic!("Nothing should send Completed");
-          // if todo == update_completed {
-          //   break;
-          // }
         },
-        VolumeResult::MainThreadMoveOutOfDate { done: mut done, volume: volume, record: record, old_new: old_new } => {
+        VolumeResult::MainThreadMoveOutOfDate { mut done, volume, record, old_new } => {
           VolumeRoot::_update_remove_out_of_date_contained(0, unsafe { &mut *volume }, unsafe { &mut *record }, unsafe { &mut *old_new }, &mut removed, &mut deeper, &mut removed_triggers, &mut deeper_triggers);
           done += 1;
           if let (&mut Some(ref mut volume_children), &mut Some(ref mut record_children)) = (&mut unsafe { &mut *volume }.children, &mut unsafe { &mut *record }.children) {
@@ -1228,67 +1047,15 @@ impl VolumeRoot {
               t = if t == self.threads - 1 {0} else {t + 1};
             }
           }
-          // update_completed += 1;
-          // if todo == update_completed {
-          //   break;
-          // }
           else if done > 0 {
             update_completed += done;
           }
-          //   update_completed += done;
-          //   if todo == update_completed {
-          //     break;
-          //   }
-          //   // if cfg!(target_os="ios") {
-          //   //   result_tx.send(VolumeResult::Completed(done)).unwrap();
-          //   // }
-          //   // else {
-          //   //   result_tx.send(VolumeResult::Completed(done)).unwrap();
-          //   //   // job_txs[0].send(VolumeJob::UpdateProgress(done)).unwrap();
-          //   // }
-          // }
         }
         result => {
           panic!("Unexpected result {:?}", result);
         },
       }
-      // println!("MoveOutOfDate {} / {}", update_completed, todo);
     }
-
-    // self.job_txs[0].send(VolumeJob::MoveOutOfDate {
-    //   done: 0,
-    //   volume: &mut self.root,
-    //   record: &mut self.records,
-    //   old_new: &mut *bb_clones,
-    // }).unwrap();
-    //
-    // if cfg!(not(target_os="ios")) {
-    //   thread::park();
-    //   match self.result_rx.recv().unwrap() {
-    //     VolumeResult::Completed(completed) => {
-    //       if todo != completed {
-    //         panic!("Didn't complete work before unparking {} / {}", completed, todo);
-    //       }
-    //     },
-    //     _ => {
-    //       panic!("Unexpected result");
-    //     },
-    //   }
-    // }
-    // else
-    // {
-    //   while done < todo {
-    //     match self.result_rx.recv().unwrap() {
-    //       VolumeResult::Completed(completed) => {
-    //         done += completed;
-    //       },
-    //       _ => {
-    //         panic!("Unexpected result");
-    //       },
-    //     }
-    //   }
-    //   assert_eq!(done, todo);
-    // }
   }
 
   fn update_add_newly_contained(&mut self, particles: &mut Vec<Particle>) {
@@ -1363,20 +1130,12 @@ impl VolumeRoot {
   }
 
   #[inline(never)]
-  fn update_leaves_uncontained(&mut self, particles: &mut Vec<Particle>) {
-    let mut bb_clones = unsafe { &*(&self.bb_clone as *const Vec<OldNew>) as &Vec<OldNew> };
-
-    // self.root.walk_rev_mut(|vvolume| {
-    //   VolumeRoot::_update_leaves_uncontained(vvolume, bb_clones);
-    // });
+  fn update_leaves_uncontained(&mut self, _: &mut Vec<Particle>) {
+    let bb_clones = unsafe { &*(&self.bb_clone as *const Vec<OldNew>) as &Vec<OldNew> };
 
     let mut todo = 0;
     self.root.walk_rev_mut(|v| {if v.children.is_some() {todo += 1;}});
 
-    // self.job_txs[0].send(VolumeJob::UpdateStart(todo)).unwrap();
-    // self.result_rx.recv().unwrap();
-
-    // if cfg!(not(target_os="ios")) {
     let mut update_completed = 0;
     if todo > 0 {
       self.result_tx.send(VolumeResult::MainThreadUpdateUncontained {
@@ -1386,17 +1145,12 @@ impl VolumeRoot {
       }).unwrap();
     }
 
-    // thread::park();
     while update_completed < todo {
       match self.result_rx.recv().unwrap() {
-        // VolumeResult::UpdateUncontainedDone => {
-        //   update_completed += 1;
-        //   println!("UpdateUncontained Done {} / {}", update_completed, todo);
-        // },
         VolumeResult::UpdateUncontainedCompleted(completed) => {
           update_completed += completed;
         },
-        VolumeResult::MainThreadUpdateUncontained { done: mut done, volume: volume, old_new: old_new } => {
+        VolumeResult::MainThreadUpdateUncontained { mut done, volume, old_new } => {
           if let Some(ref mut children) = unsafe { &mut *volume }.children {
             VolumeRoot::_update_leaves_uncontained(unsafe { &mut *volume }, bb_clones);
             done += 1;
@@ -1426,48 +1180,16 @@ impl VolumeRoot {
             if done > 0 {
               update_completed += done;
              }
-            // self.result_tx.send(VolumeResult::UpdateUncontainedDone).unwrap();
           }
           else if done > 0 {
             update_completed += done;
-            // if cfg!(target_os="ios") {
-              // if todo == update_completed {
-              //   break;
-              // }
-              // self.result_tx.send(VolumeResult::Completed(done)).unwrap();
-            // }
-            // else {
-            //   job_txs[0].send(VolumeJob::UpdateProgress(done)).unwrap();
-            // }
           }
         },
         result => {
           panic!("Unexpected result {:?}", result);
         },
       }
-      // println!("UpdateUncontained {} / {}", update_completed, todo);
     }
-    // }
-    // else {
-    //   self.job_txs[0].send(VolumeJob::UpdateUncontained {
-    //     done: 1,
-    //     volume: &mut self.root,
-    //     old_new: &*bb_clones,
-    //   }).unwrap();
-    //
-    //   let mut done = 0;
-    //   while done < todo {
-    //     match self.result_rx.recv().unwrap() {
-    //       VolumeResult::Completed(completed) => {
-    //         done += completed;
-    //       },
-    //       _ => {
-    //         panic!("Unexpected result");
-    //       },
-    //     }
-    //   }
-    //   assert_eq!(done, todo);
-    // }
   }
 
   fn update_split_and_join(&mut self, particles: &mut Vec<Particle>) {
@@ -1514,10 +1236,6 @@ impl VolumeRoot {
         record.join();
       }
     });
-  }
-
-  fn walk_with_record_stack_rev_mut(&mut self, handle: &mut FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>)) {
-    self.root.walk_with_record_stack_rev_mut(&mut self.records, handle);
   }
 
   fn walk_with_record_mut<F>(&mut self, mut handle: F) where F : FnMut(&mut QuadTree<VirtualVolume>, &mut QuadTree<VirtualRecord>) {

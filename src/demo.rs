@@ -1,45 +1,22 @@
-// extern crate glfw;
-
-use std::any::Any;
 use std::collections::vec_deque::VecDeque;
 use std::time::{Instant};
 
-use time::get_time;
+
 use rand::{random, Open01};
-
-// use super::*;
-
-// use self::glfw::Context;
-
-// #[macro_use]
-// mod math;
-// mod particle;
-// mod collision;
-// mod ddvt;
-// mod ddvt_bench;
-// mod quad_tree;
-// mod world;
-// mod world_renderer;
 
 use std::f32;
 use std::f64;
 
-// #[macro_use]
-// use math;
-// #[macro_use]
-// use phrust;
-// #[macro_use]
 use super::math::*;
 use super::world;
 use super::world::*;
-use super::world_renderer;
 use super::particle;
 use super::particle::Particle;
 
-fn now() -> f64 {
-  let spec = get_time();
-  (spec.sec as f64) + (spec.nsec as f64 / 1e9f64)
-}
+// fn now() -> f64 {
+//   let spec = get_time();
+//   (spec.sec as f64) + (spec.nsec as f64 / 1e9f64)
+// }
 
 fn seconds(sec: u64, nsec: u32) -> f64 {
   (sec as f64) + (nsec as f64 / 1e9f64)
@@ -62,8 +39,6 @@ impl WorldEffect for Pulse {
   fn apply(&mut self, editor: &world::WorldEditor) {
     self.radians += self.dt;
     for triggered in editor.iter_triggered(self.trigger.id) {
-      let lpx = triggered.last_position.x;
-      let lpy = triggered.last_position.y;
       triggered.last_position =
         triggered.last_position +
           (-self.trigger.position + triggered.position).unit()
@@ -76,7 +51,6 @@ struct Flow {
   particles: Vec<Particle>,
   flows: Vec<V2>,
   strength: f32,
-  radius: f32,
 }
 
 impl Flow {
@@ -97,7 +71,6 @@ impl Flow {
       }).collect(),
       flows: flows,
       strength: strength,
-      radius: radius,
     }
   }
 }
@@ -217,7 +190,6 @@ impl Demo {
     world.gravity = options.world_gravity;
 
     for i in 0..options.particle_count {
-      let Open01(factor_rand) = random::<Open01<f32>>();
       let Open01(radius_rand) = random::<Open01<f32>>();
       let radius_base = options.particle_base;
       let radius_range = options.particle_range;
