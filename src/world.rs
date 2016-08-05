@@ -980,7 +980,7 @@ impl WorldPool {
     // let threads = 1;
     println!("WorldPool using {} threads.", threads);
 
-    let pool = ConsumerPool::new(result_tx.clone(), || {
+    let pool = ConsumerPool::new(result_tx.clone(), |_, _| {
       let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
       let mut maybe_triggers = Some(Vec::<Triggers>::new());
       let mut particle_copies = [Particle { .. Default::default() }; 256];

@@ -1,7 +1,48 @@
 extern crate num_cpus;
 
 use std::thread;
-use std::sync::mpsc::{Sender, SendError, channel};
+use std::sync::mpsc::{Sender, Receiver, SendError, channel};
+
+pub struct Producer<T> {
+  next: usize,
+  senders: Vec<Sender<T>>,
+}
+
+impl<T> Producer<T> {
+  fn new(threads: usize) -> (Producer<T>, Vec<Receiver<T>>) {
+    let mut txs = Vec::new();
+    let mut rxs = Vec::new();
+
+    for _ in 0..threads {
+      let (tx, rx) = channel();
+      txs.push(tx);
+      rxs.push(rx);
+    }
+
+    (
+      Producer {
+        next: 0,
+        senders: txs,
+      },
+      rxs
+    )
+  }
+
+  pub fn send(&mut self, job: T) -> Result<(), SendError<T>> {
+    let next = self.next;
+    self.next = if next == self.senders.len() - 1 {0} else {next + 1};
+    self.senders[next].send(job)
+  }
+}
+
+impl<T> Clone for Producer<T> {
+  fn clone(&self) -> Producer<T> {
+    Producer {
+      next: self.next,
+      senders: self.senders.clone(),
+    }
+  }
+}
 
 pub struct Consumer<T, R> {
   handle: Box<FnMut(T) -> Option<R> + 'static + Send>,
@@ -28,9 +69,7 @@ pub struct HelperConsumer<T> {
 }
 
 impl<T> HelperConsumer<T> where T : 'static + Send {
-  pub fn new<C, R>(result_tx: Sender<R>, mut consumer: C) -> HelperConsumer<T> where C : Consumable<T, R> + 'static + Send, R : 'static + Send {
-    let (job_tx, job_rx) = channel();
-
+  pub fn new<C, R>(job_tx: Sender<T>, job_rx: Receiver<T>, result_tx: Sender<R>, mut consumer: C) -> HelperConsumer<T> where C : Consumable<T, R> + 'static + Send, R : 'static + Send {
     thread::Builder::new().name("World thread".to_string()).spawn(move || {
       loop {
         let result = consumer.process(job_rx.recv().unwrap());
@@ -53,14 +92,16 @@ impl<T> HelperConsumer<T> where T : 'static + Send {
 pub struct MainConsumer<T, R> {
   consumer: Consumer<T, R>,
   jobs: Vec<T>,
+  job_rx: Receiver<T>,
   result_tx: Sender<R>,
 }
 
 impl<T, R> MainConsumer<T, R> {
-  pub fn new(result_tx: Sender<R>, consumer: Consumer<T, R>) -> MainConsumer<T, R> {
+  pub fn new(job_rx: Receiver<T>, result_tx: Sender<R>, consumer: Consumer<T, R>) -> MainConsumer<T, R> {
     MainConsumer {
       consumer: consumer,
       jobs: Vec::new(),
+      job_rx: job_rx,
       result_tx: result_tx,
     }
   }
@@ -76,6 +117,12 @@ impl<T, R> MainConsumer<T, R> {
         self.result_tx.send(result).unwrap();
       }
     }
+    while let Ok(job) = self.job_rx.try_recv() {
+      let result = self.consumer.process(job);
+      if let Some(result) = result {
+        self.result_tx.send(result).unwrap();
+      }
+    }
   }
 }
 
@@ -87,14 +134,25 @@ pub struct ConsumerPool<T, R> {
 }
 
 impl<T, R> ConsumerPool<T, R> where T : 'static + Send, R : 'static + Send {
-  pub fn new<F>(result_tx: Sender<R>, gen: F) -> ConsumerPool<T, R> where F : Fn() -> Consumer<T, R> + 'static + Send {
+  pub fn new<F>(result_tx: Sender<R>, gen: F) -> ConsumerPool<T, R> where F : Fn(usize, Producer<T>) -> Consumer<T, R> + 'static + Send {
     let threads = num_cpus::get();
+
+    let (producer, mut rxs) = Producer::new(threads);
 
     ConsumerPool {
       threads: threads,
       next_thread: 0,
-      main: MainConsumer::new(result_tx.clone(), gen()),
-      helpers: (0..(threads - 1)).map(|_| HelperConsumer::new(result_tx.clone(), gen())).collect(),
+      main: MainConsumer::new(
+        rxs.remove(0),
+        result_tx.clone(),
+        gen(0, producer.clone())),
+      helpers: (0..(threads - 1))
+      .map(|i| HelperConsumer::new(
+        producer.senders[i + 1].clone(),
+        rxs.remove(0),
+        result_tx.clone(),
+        gen(i + 1, producer.clone())))
+      .collect(),
     }
   }
 
