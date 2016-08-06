@@ -1,5 +1,6 @@
 use std::ops::*;
 use std::f32;
+use std::f32::EPSILON;
 use std::fmt;
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -167,7 +168,7 @@ impl V2 {
 
   #[inline]
   pub fn rmag(self: V2) -> f32 {
-    1.0 / (self.x * self.x + self.y * self.y).sqrt()
+    1.0 / (self.x * self.x + self.y * self.y + EPSILON).sqrt()
     // 1.0 / self.x.hypot(self.y)
   }
 
@@ -187,7 +188,7 @@ impl V2 {
 
   #[inline]
   pub fn rdist(self, other: V2) -> f32 {
-    1.0 / ((self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (self.y - other.y)).sqrt()
+    1.0 / ((self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (self.y - other.y) + EPSILON).sqrt()
   }
 
   #[inline]
