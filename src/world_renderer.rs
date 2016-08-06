@@ -15,8 +15,8 @@ use super::world::World;
 
 pub struct WorldRenderer {
   // data: Vec<particle>,
-  driver: Box<Driver>,
   render_data: RenderData,
+  driver: Box<Driver>,
   // pub world: World,
   // glfw: glfw::Glfw,
   // window: glfw::Window,
@@ -449,6 +449,18 @@ impl Driver for GLDriver {
   }
 }
 
+struct HeadlessDriver {}
+
+impl HeadlessDriver {
+  fn new() -> HeadlessDriver {
+    HeadlessDriver {}
+  }
+}
+
+impl Driver for HeadlessDriver {
+  fn draw(&mut self, data: &RenderData) {}
+}
+
 impl BB {
   fn into_particle(self, color: GLColor) -> GLParticle {
     GLParticle {
@@ -465,23 +477,33 @@ impl BB {
 }
 
 impl WorldRenderer {
+  fn render_data() -> RenderData {
+    RenderData {
+      passes: vec!(
+        RenderPass {
+          draws: vec!(RenderDraw {
+            program: RenderProgram::VertexColor,
+            properties: Vec::<RenderProperty>::new(),
+            mesh_properties: Vec::<MeshProperty>::new(),
+            mesh_triangles: 0,
+            mesh: Vec::<u8>::new(),
+          }),
+        },
+      ),
+    }
+  }
+
   pub fn new() -> WorldRenderer {
     WorldRenderer {
-      // data: Vec::<particle>::new(),
+      render_data: WorldRenderer::render_data(),
       driver: Box::new(GLDriver::new()),
-      render_data: RenderData {
-        passes: vec!(
-          RenderPass {
-            draws: vec!(RenderDraw {
-              program: RenderProgram::VertexColor,
-              properties: Vec::<RenderProperty>::new(),
-              mesh_properties: Vec::<MeshProperty>::new(),
-              mesh_triangles: 0,
-              mesh: Vec::<u8>::new(),
-            }),
-          },
-        ),
-      },
+    }
+  }
+
+  pub fn new_headless() -> WorldRenderer {
+    WorldRenderer {
+      render_data: WorldRenderer::render_data(),
+      driver: Box::new(HeadlessDriver::new()),
     }
   }
 
