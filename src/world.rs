@@ -17,7 +17,7 @@ use super::math::*;
 
 use super::particle;
 use super::particle::Particle;
-use super::collision::Collision;
+use super::collision::*;
 use super::ddvt::VolumeRoot;
 
 use super::pool::{Consumer, ConsumerPool};
@@ -27,7 +27,7 @@ struct Positions {
   solutions: f32,
   ingress: f32,
   position: V2,
-  last_position: V2,
+  // last_position: V2,
 }
 
 #[derive(Clone, Default)]
@@ -45,6 +45,7 @@ pub struct World {
   changes: Vec<WorldChange>,
   effects: Vec<Box<WorldEffect>>,
   particles: Vec<Particle>,
+  minis: Vec<MiniParticle>,
   triggered: Vec<Vec<usize>>,
   free_particles: Vec<usize>,
   volume_tree: VolumeRoot,
@@ -231,7 +232,7 @@ struct ParticleJob {
   uncontained: *const Vec<usize>,
   contained_triggers: *const Vec<usize>,
   uncontained_triggers: *const Vec<usize>,
-  source: *const Vec<Particle>,
+  source: *const Vec<MiniParticle>,
   // particles: [Particle; 256],
 }
 
@@ -241,6 +242,7 @@ struct IntegrateJob {
   start: usize,
   end: usize,
   particles: *mut Particle,
+  minis: *mut MiniParticle,
 
   bb: BB,
   dt2: f32,
@@ -412,6 +414,7 @@ impl World {
       changes: Vec::new(),
       effects: Vec::new(),
       particles: Vec::new(),
+      minis: Vec::new(),
       triggered: Vec::new(),
       free_particles: Vec::new(),
       solve_positions: Vec::new(),
@@ -437,6 +440,7 @@ impl World {
     }
     while id >= self.particles.len() {
       self.particles.push(Default::default());
+      self.minis.push(Default::default());
       self.triggered.push(Default::default());
       self.solve_positions.push(Default::default());
       self.solve_triggered.push(Default::default());
@@ -563,6 +567,7 @@ impl World {
         job.start = i;
         job.end = if i + PARTICLES_PER_JOB > len {len} else {i + PARTICLES_PER_JOB};
         job.particles = self.particles.as_mut_ptr();
+        job.minis = self.minis.as_mut_ptr();
         job.dt2 = self.dt2;
         job.bb = self.bb;
         job.gravity = self.gravity;
@@ -579,6 +584,7 @@ impl World {
     let mut i = job.start;
     while i < job.end {
       let particle = unsafe { &mut *job.particles.offset(i as isize) };
+      let mini = unsafe { &mut *job.minis.offset(i as isize) };
       i += 1;
     // for particle in unsafe { &mut *job.particles }.iter_mut() {
       if particle.is_dynamic() {
@@ -602,6 +608,7 @@ impl World {
       particle.position.y = particle.position.y + constrain_y;
       particle.last_position.x = particle.last_position.x - constrain_x;
       particle.last_position.y = particle.last_position.y - constrain_y;
+      *mini = MiniParticle::from(&*particle);
 
       // particle.bbox = particle.bb();
       // let bb = particle.bbox;
@@ -667,7 +674,7 @@ impl World {
         let mut job = pool.job();
         // let mut particles_len = 0;
         // World::copy_particles(self.particles.as_ptr(), &mut job.particles, &mut particles_len, contained, uncontained, contained_triggers, uncontained_triggers);
-        job.source = &self.particles;
+        job.source = &self.minis;
         job.max = self.particles.len();
         job.contained = &*contained;
         job.uncontained = &*uncontained;
@@ -696,7 +703,7 @@ impl World {
   }
 
   #[inline(never)]
-  fn copy_particles(s: *const Vec<Particle>, particles: &mut [Particle], particles_len: &mut usize, contained: *const Vec<usize>, uncontained: *const Vec<usize>, contained_triggers: *const Vec<usize>, uncontained_triggers: *const Vec<usize>) {
+  fn copy_particles(s: *const Vec<MiniParticle>, particles: &mut [MiniParticle], particles_len: &mut usize, contained: *const Vec<usize>, uncontained: *const Vec<usize>, contained_triggers: *const Vec<usize>, uncontained_triggers: *const Vec<usize>) {
     // *particles_len = 0;
     // for (i, &id) in contained.iter().chain(uncontained.iter()).enumerate() {
     //   // println!("{}", *id);
@@ -739,7 +746,7 @@ impl World {
     *particles_len = cl + ul + ctl + utl;
   }
 
-  fn _test_solve_particles(particles: &mut ParticleJob, particle_copies: &mut [Particle; 256], solutions: &mut Vec<Positions>, scratch: &mut [Positions; 256], triggers: &mut Vec<Triggers>) {
+  fn _test_solve_particles(particles: &mut ParticleJob, particle_copies: &mut [MiniParticle; 256], solutions: &mut Vec<Positions>, scratch: &mut [Positions; 256], triggers: &mut Vec<Triggers>) {
     while solutions.len() < particles.max {
       solutions.push(Default::default());
     }
@@ -754,7 +761,7 @@ impl World {
     World::test_solve_particles(&*particle_copies, len, contained, triggers_len, solutions, scratch, triggers);
   }
 
-  fn test_solve_particles(particles: &[Particle], particles_len: usize, contained_len: usize, triggers_start: usize, positions: &mut [Positions], scratch: &mut [Positions], triggers: &mut [Triggers]) {
+  fn test_solve_particles(particles: &[MiniParticle], particles_len: usize, contained_len: usize, triggers_start: usize, positions: &mut [Positions], scratch: &mut [Positions], triggers: &mut [Triggers]) {
     let mut i = 0;
     let mut j;
     let p = particles.as_ptr();
@@ -768,13 +775,9 @@ impl World {
       j = i + 1;
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
-        if Collision::test2(a, b) {
+        if Collision::test_mini(a, b) {
           c[ci] = j;
           ci += 1;
-          // let (ap, bp, ain, bin) = Collision::solve2(a, b);
-          // let sb = unsafe { &mut *s.offset(j as isize) };
-          // sa.add(ap, ain);
-          // sb.add(bp, bin);
         }
         j += 1;
       }
@@ -783,7 +786,7 @@ impl World {
         j = c[ci];
         let b = unsafe { &*p.offset(j as isize) };
         let sb = unsafe { &mut *s.offset(j as isize) };
-        let (ap, bp, ain, bin) = Collision::solve2(a, b);
+        let (ap, bp, ain, bin) = Collision::solve_mini(a, b);
         sa.add(ap, ain);
         sb.add(bp, bin);
       }
@@ -796,13 +799,9 @@ impl World {
       j = i + 1;
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
-        if Collision::test2(a, b) {
+        if Collision::test_mini(a, b) {
           c[ci] = j;
           ci += 1;
-          // let (ap, bp, ain, bin) = Collision::solve2(a, b);
-          // let sb = unsafe { &mut *s.offset(j as isize) };
-          // sa.add_half(ap, ain);
-          // sb.add_half(bp, bin);
         }
         j += 1;
       }
@@ -811,20 +810,20 @@ impl World {
         j = c[ci];
         let b = unsafe { &*p.offset(j as isize) };
         let sb = unsafe { &mut *s.offset(j as isize) };
-        let (ap, bp, ain, bin) = Collision::solve2(a, b);
+        let (ap, bp, ain, bin) = Collision::solve_mini(a, b);
         sa.add_half(ap, ain);
         sb.add_half(bp, bin);
       }
       i += 1;
     }
     while i < particles_len {
-      let a = unsafe { *p.offset(i as isize) };
-      let ap = &a;
+      let a = unsafe { &*p.offset(i as isize) };
+      // let ap = &a;
       let ta = unsafe { &mut *t.offset(a.id as isize) };
       j = 0;
       while j < triggers_start {
         let b = unsafe { &*p.offset(j as isize) };
-        if Collision::test2(ap, b) {
+        if Collision::test_mini(a, b) {
           ta.add_trigger(b.id);
         }
         j += 1;
@@ -832,7 +831,7 @@ impl World {
       j = i + 1;
       while j < particles_len {
         let b = unsafe { &*p.offset(j as isize) };
-        if Collision::test2(ap, b) {
+        if Collision::test_mini(a, b) {
           let tb = unsafe { &mut *t.offset(b.id as isize) };
           ta.add_trigger(b.id);
           tb.add_trigger(a.id);
@@ -899,14 +898,13 @@ impl World {
                 .project_scale_add(
                   positions.position,
                   dt2 * positions.ingress * particle.radius,
-                  positions.last_position.scale_add(
-                    inv_solutions,
-                    (particle.last_position - particle.position)
-                      .scale_add(
-                        // 0.9999,
-                        1.0 - particle.friction2 * solutions,
-                        particle.position
-                      )
+                  (particle.last_position - particle.position)
+                  .scale_add(
+                    1.0 - particle.friction2 * solutions,
+                    // positions.last_position.scale_add(
+                    //   inv_solutions,
+                      particle.position
+                    // )
                   )
                 );
           }
@@ -920,20 +918,21 @@ impl World {
               (particle.last_position - particle.position)
               .scale_add(
                 1.0 - particle.friction2 * solutions,
-                positions.last_position.scale_add(
-                  inv_solutions, particle.position
-                )
+                // positions.last_position.scale_add(
+                //   inv_solutions,
+                  particle.position
+                // )
               );
-            particle.last_position =
-              positions.last_position.scale_add(
-                inv_solutions,
-                (particle.last_position - particle.position)
-                  .scale_add(
-                    // 0.9999,
-                    1.0 - particle.friction2 * solutions,
-                    particle.position
-                  )
-              );
+            // particle.last_position =
+            //   positions.last_position.scale_add(
+            //     inv_solutions,
+            //     (particle.last_position - particle.position)
+            //       .scale_add(
+            //         // 0.9999,
+            //         1.0 - particle.friction2 * solutions,
+            //         particle.position
+            //       )
+            //   );
           }
           particle.position =
             positions.position.scale_add(inv_solutions, particle.position);
@@ -987,7 +986,7 @@ impl WorldPool {
     let pool = ConsumerPool::new(result_tx.clone(), |_, _| {
       let mut maybe_solutions : Option<Vec<Positions>> = Some(Vec::<Positions>::new());
       let mut maybe_triggers = Some(Vec::<Triggers>::new());
-      let mut particle_copies = [Particle { .. Default::default() }; 256];
+      let mut particle_copies = [MiniParticle { .. Default::default() }; 256];
       let mut scratch = [Positions { .. Default::default() }; 256];
 
       Consumer::new(move |job| {
@@ -1074,6 +1073,7 @@ impl WorldPool {
         start: 0,
         end: 0,
         particles: ptr::null_mut(),
+        minis: ptr::null_mut(),
 
         dt2: 0.0,
         bb: BB::infinity(),

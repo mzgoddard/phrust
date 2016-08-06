@@ -143,6 +143,7 @@ pub struct ConsumerPool<T, R> {
 impl<T, R> ConsumerPool<T, R> where T : 'static + Send, R : 'static + Send {
   pub fn new<F>(result_tx: Sender<R>, gen: F) -> ConsumerPool<T, R> where F : Fn(usize, Producer<T>) -> Consumer<T, R> + 'static + Send {
     let threads = num_cpus::get();
+    // let threads = 1;
 
     let (producer, mut rxs) = Producer::new(threads);
 

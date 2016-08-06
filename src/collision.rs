@@ -13,6 +13,25 @@ pub struct Collision {
   pub pqt: f32,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct MiniParticle {
+  pub id: usize,
+  pub position: V2,
+  pub radius: f32,
+  pub mass: f32,
+}
+
+impl MiniParticle {
+  pub fn from(full: &Particle) -> MiniParticle {
+    MiniParticle {
+      id: full.id,
+      position: full.position,
+      radius: full.radius,
+      mass: full.mass,
+    }
+  }
+}
+
 impl Collision {
   // #[inline]
   // pub fn test(a: &Particle, b: &Particle,
@@ -79,27 +98,39 @@ impl Collision {
     let bm = a.mass / (a.mass + b.mass);
 
     (
-      // diff.scale(pqt),
-      // diff.scale(-pqt),
       diff.scale(am * pqt),
       diff.scale(-bm * pqt),
       ingress * am,
       ingress * bm
     )
-    // let diff = a.position - b.position;
-    // let ingress_ep = a.position.dist(b.position) + EPSILON;
-    // // Decrease ingress a little to increase the power of the spring a little.
-    // let pqt = ((((a.radius + b.radius) / (ingress_ep)) - 1.0f32).min(1.0) / (ingress_ep));
-    // let ingress = (a.radius + b.radius - ingress_ep) / (a.radius + b.radius);
-    //
-    // (
-    //   // diff.scale(pqt),
-    //   // diff.scale(-pqt),
-    //   diff.scale(b.mass / (a.mass + b.mass) * pqt),
-    //   diff.scale(-a.mass / (a.mass + b.mass) * pqt),
-    //   ingress * b.mass / (a.mass + b.mass),
-    //   ingress * a.mass / (a.mass + b.mass)
-    // )
+  }
+
+  #[inline]
+  pub fn test_mini(a: &MiniParticle, b: &MiniParticle) -> bool {
+    (a.radius + b.radius) * (a.radius + b.radius) > a.position.dist2(b.position)
+  }
+
+  #[inline]
+  pub fn test_mini_pm(a: &Particle, b: &MiniParticle) -> bool {
+    (a.radius + b.radius) * (a.radius + b.radius) > a.position.dist2(b.position)
+  }
+
+  #[inline]
+  pub fn solve_mini(a: &MiniParticle, b: &MiniParticle) -> (V2, V2, f32, f32) {
+    let diff = a.position - b.position;
+    let abr = a.radius + b.radius;
+    let ingress_r = diff.rmag();
+    let pqt = (abr * ingress_r + -1.0).min(1.0) * ingress_r;
+    let ingress = -1.0 / (abr * ingress_r) + 1.0;
+    let am = b.mass / (a.mass + b.mass);
+    let bm = a.mass / (a.mass + b.mass);
+
+    (
+      diff.scale(am * pqt),
+      diff.scale(-bm * pqt),
+      ingress * am,
+      ingress * bm
+    )
   }
 
   #[inline]

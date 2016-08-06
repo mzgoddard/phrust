@@ -458,7 +458,7 @@ impl HeadlessDriver {
 }
 
 impl Driver for HeadlessDriver {
-  fn draw(&mut self, data: &RenderData) {}
+  fn draw(&mut self, _: &RenderData) {}
 }
 
 impl BB {

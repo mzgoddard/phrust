@@ -19,10 +19,10 @@ pub struct ParticleId {
 pub struct Particle {
   pub id: usize,
   pub position: V2,
-  pub last_position: V2,
-  pub acceleration: V2,
   pub radius: f32,
   pub mass: f32,
+  pub last_position: V2,
+  pub acceleration: V2,
   pub drag: f32,
   pub friction: f32,
   pub friction2: f32,
