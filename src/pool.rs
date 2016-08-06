@@ -33,6 +33,10 @@ impl<T> Producer<T> {
     self.next = if next == self.senders.len() - 1 {0} else {next + 1};
     self.senders[next].send(job)
   }
+
+  pub fn send_main(&mut self, job: T) -> Result<(), SendError<T>> {
+    self.senders[0].send(job)
+  }
 }
 
 impl<T> Clone for Producer<T> {
@@ -64,12 +68,10 @@ impl<T, R> Consumable<T, R> for Consumer<T, R> {
   }
 }
 
-pub struct HelperConsumer<T> {
-  job_tx: Sender<T>,
-}
+pub struct HelperConsumer {}
 
-impl<T> HelperConsumer<T> where T : 'static + Send {
-  pub fn new<C, R>(job_tx: Sender<T>, job_rx: Receiver<T>, result_tx: Sender<R>, mut consumer: C) -> HelperConsumer<T> where C : Consumable<T, R> + 'static + Send, R : 'static + Send {
+impl HelperConsumer {
+  pub fn new<C, T, R>(job_rx: Receiver<T>, result_tx: Sender<R>, mut consumer: C) -> HelperConsumer where C : Consumable<T, R> + 'static + Send, T : 'static + Send, R : 'static + Send {
     thread::Builder::new().name("World thread".to_string()).spawn(move || {
       loop {
         let result = consumer.process(job_rx.recv().unwrap());
@@ -79,13 +81,7 @@ impl<T> HelperConsumer<T> where T : 'static + Send {
       }
     }).unwrap();
 
-    HelperConsumer {
-      job_tx: job_tx,
-    }
-  }
-
-  pub fn send(&mut self, job: T) -> Result<(), SendError<T>> {
-    self.job_tx.send(job)
+    HelperConsumer {}
   }
 }
 
@@ -106,10 +102,6 @@ impl<T, R> MainConsumer<T, R> {
     }
   }
 
-  pub fn send(&mut self, job: T) {
-    self.jobs.push(job);
-  }
-
   pub fn process_all(&mut self) {
     while self.jobs.len() > 0 {
       let result = self.consumer.process(self.jobs.pop().unwrap());
@@ -124,13 +116,28 @@ impl<T, R> MainConsumer<T, R> {
       }
     }
   }
+
+  pub fn process_until<F>(&mut self, mut until: F) where F : FnMut(&T) -> bool {
+    while let Ok(job) = self.job_rx.recv() {
+      if until(&job) {
+        let result = self.consumer.process(job);
+        if let Some(result) = result {
+          self.result_tx.send(result).unwrap();
+        }
+      }
+      else {
+        break;
+      }
+    }
+  }
 }
 
+#[allow(dead_code)]
 pub struct ConsumerPool<T, R> {
   threads: usize,
-  next_thread: usize,
+  producer: Producer<T>,
   main: MainConsumer<T, R>,
-  helpers: Vec<HelperConsumer<T>>,
+  helpers: Vec<HelperConsumer>,
 }
 
 impl<T, R> ConsumerPool<T, R> where T : 'static + Send, R : 'static + Send {
@@ -141,14 +148,13 @@ impl<T, R> ConsumerPool<T, R> where T : 'static + Send, R : 'static + Send {
 
     ConsumerPool {
       threads: threads,
-      next_thread: 0,
+      producer: producer.clone(),
       main: MainConsumer::new(
         rxs.remove(0),
         result_tx.clone(),
         gen(0, producer.clone())),
       helpers: (0..(threads - 1))
       .map(|i| HelperConsumer::new(
-        producer.senders[i + 1].clone(),
         rxs.remove(0),
         result_tx.clone(),
         gen(i + 1, producer.clone())))
@@ -157,22 +163,14 @@ impl<T, R> ConsumerPool<T, R> where T : 'static + Send, R : 'static + Send {
   }
 
   pub fn send(&mut self, job: T) -> Result<(), SendError<T>> {
-    let next_thread = self.next_thread;
-    self.next_thread += 1;
-    if self.next_thread == self.threads {
-      self.next_thread = 0;
-    }
-
-    if next_thread == 0 {
-      self.main.send(job);
-      Ok(())
-    }
-    else {
-      self.helpers[next_thread - 1].send(job)
-    }
+    self.producer.send(job)
   }
 
   pub fn process_main(&mut self) {
     self.main.process_all();
+  }
+
+  pub fn process_until<F>(&mut self, until: F) where F : FnMut(&T) -> bool {
+    self.main.process_until(until);
   }
 }

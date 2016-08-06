@@ -72,14 +72,39 @@ enum VolumeJob {
   CopyOld { start: usize, end: usize, old_new: *mut OldNew },
   UpdateUncontained { done: usize, volume: *mut QuadTree<VirtualVolume>, old_new: *const Vec<OldNew> },
   MoveOutOfDate { done: usize, volume: *mut QuadTree<VirtualVolume>, record: *mut QuadTree<VirtualRecord>, old_new: *mut Vec<OldNew> },
+  UpdateUncontainedCompleted(usize),
+  MoveOutOfDateCompleted(usize),
 }
 
 unsafe impl Send for VolumeJob {}
 
+impl fmt::Debug for VolumeJob {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    match self {
+      &VolumeJob::CopyBB { start: _, end: _, old_new: _, particles: _ } => {
+        write!(f, "CopyBB")
+      },
+      &VolumeJob::CopyOld { start: _, end: _, old_new: _ } => {
+        write!(f, "CopyOld")
+      },
+      &VolumeJob::UpdateUncontained { done: _, volume: _, old_new: _ } => {
+        write!(f, "UpdateUncontained")
+      },
+      &VolumeJob::MoveOutOfDate { done: _, volume: _, record: _, old_new: _ } => {
+        write!(f, "MoveOutOfDate")
+      },
+      &VolumeJob::UpdateUncontainedCompleted(_) => {
+        write!(f, "UpdateUncontainedCompleted")
+      },
+      &VolumeJob::MoveOutOfDateCompleted(_) => {
+        write!(f, "MoveOutOfDateCompleted")
+      },
+    }
+  }
+}
+
 enum VolumeResult {
   Done,
-  UpdateUncontainedCompleted(usize),
-  MoveOutOfDateCompleted(usize),
   BBDone,
 }
 
@@ -96,12 +121,6 @@ impl fmt::Debug for VolumeResult {
     match self {
       &VolumeResult::Done => {
         write!(f, "Done")
-      },
-      &VolumeResult::UpdateUncontainedCompleted(_) => {
-        write!(f, "UpdateUncontainedCompleted")
-      },
-      &VolumeResult::MoveOutOfDateCompleted(_) => {
-        write!(f, "MoveOutOfDateCompleted")
       },
       &VolumeResult::BBDone => {
         write!(f, "BBDone")
@@ -602,11 +621,9 @@ impl VolumeRoot {
               }
             }
             if done > 0 {
-              Some(VolumeResult::UpdateUncontainedCompleted(done))
+              producer.send_main(VolumeJob::UpdateUncontainedCompleted(done)).unwrap();
             }
-            else {
-              None
-            }
+            None
           },
           VolumeJob::MoveOutOfDate { mut done, volume, record, old_new } => {
             VolumeRoot::_update_remove_out_of_date_contained(thread_id, unsafe { &mut *volume }, unsafe { &mut *record }, unsafe { &mut *old_new }, &mut removed, &mut deeper, &mut removed_triggers, &mut deeper_triggers);
@@ -625,12 +642,11 @@ impl VolumeRoot {
               }
             }
             if done > 0 {
-              Some(VolumeResult::MoveOutOfDateCompleted(done))
+              producer.send_main(VolumeJob::MoveOutOfDateCompleted(done)).unwrap();
             }
-            else {
-              None
-            }
+            None
           },
+          _ => { None },
         }
       })
     });
@@ -917,19 +933,18 @@ impl VolumeRoot {
       old_new: &mut *bb_clones,
     }).unwrap();
 
-    while update_completed < todo {
-      self.pool.process_main();
-      while let Ok(job) = self.result_rx.try_recv() {
-        match job {
-          VolumeResult::MoveOutOfDateCompleted(completed) => {
-            update_completed += completed;
-          },
-          result => {
-            panic!("Unexpected result {:?}", result);
-          },
-        }
+    self.pool.process_until(|job| {
+      match job {
+        &VolumeJob::MoveOutOfDateCompleted(done) => {
+          update_completed += done;
+        },
+        &VolumeJob::MoveOutOfDate { done: _, volume: _, record: _, old_new: _ } => {},
+        job => {
+          panic!("Unexpected job {:?}", job);
+        },
       }
-    }
+      update_completed < todo
+    });
   }
 
   fn update_add_newly_contained(&mut self, particles: &mut Vec<Particle>) {
@@ -1017,20 +1032,19 @@ impl VolumeRoot {
         volume: &mut self.root,
         old_new: &*bb_clones,
       }).unwrap();
-    }
 
-    while update_completed < todo {
-      self.pool.process_main();
-      while let Ok(job) = self.result_rx.try_recv() {
+      self.pool.process_until(|job| {
         match job {
-          VolumeResult::UpdateUncontainedCompleted(completed) => {
-            update_completed += completed;
+          &VolumeJob::UpdateUncontainedCompleted(done) => {
+            update_completed += done;
           },
-          result => {
-            panic!("Unexpected result {:?}", result);
+          &VolumeJob::UpdateUncontained { done: _, volume: _, old_new: _ } => {},
+          job => {
+            panic!("Unexpected job {:?}", job);
           },
         }
-      }
+        update_completed < todo
+      });
     }
   }
 
