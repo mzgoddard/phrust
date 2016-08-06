@@ -95,6 +95,7 @@ impl WorldEffect for Flow {
   }
 }
 
+#[derive(Default, Clone, Copy)]
 pub struct DemoInput {
   pub cursor: V2,
   pub cursor_press: bool,

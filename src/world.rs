@@ -54,6 +54,8 @@ pub struct World {
   pool: Option<WorldPool>,
 }
 
+unsafe impl Send for World {}
+
 enum WorldChange {
   RemoveEffect(*mut WorldEffect),
 }
@@ -78,6 +80,8 @@ impl WorldEffectRef {
     self.as_mut(world).as_any().downcast_mut::<T>()
   }
 }
+
+unsafe impl Send for WorldEffectRef {}
 
 // impl WorldEffectRef {
 //   fn new<WE : 'static>(effect: &mut WE) -> WorldEffectRef where WE : WorldEffect {
