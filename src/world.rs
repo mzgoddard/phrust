@@ -1347,9 +1347,11 @@ impl WorldPool {
 
 impl Drop for WorldPool {
   fn drop(&mut self) {
-    for _ in 0..self.threads {
-      self.pool.send(WorldJob::ShutDown).unwrap();
-      // self.consumers[i - 1].send(WorldJob::ShutDown).unwrap();
-    }
+    println!("WorldPool.drop");
+    self.pool.shutdown();
+    // for _ in 0..self.threads {
+    //   // self.pool.send(WorldJob::ShutDown).unwrap();
+    //   // self.consumers[i - 1].send(WorldJob::ShutDown).unwrap();
+    // }
   }
 }

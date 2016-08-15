@@ -1116,3 +1116,10 @@ impl VolumeRoot {
     self.root.iter().filter_map(into_volume)
   }
 }
+
+impl Drop for VolumeRoot {
+  fn drop(&mut self) {
+    println!("VolumeRoot.drop");
+    self.pool.shutdown();
+  }
+}

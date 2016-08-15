@@ -68,20 +68,37 @@ impl<T, R> Consumable<T, R> for Consumer<T, R> {
   }
 }
 
-pub struct HelperConsumer {}
+pub struct HelperConsumer {
+  shutdown_tx: Sender<()>,
+}
 
 impl HelperConsumer {
   pub fn new<C, T, R>(job_rx: Receiver<T>, result_tx: Sender<R>, mut consumer: C) -> HelperConsumer where C : Consumable<T, R> + 'static + Send, T : 'static + Send, R : 'static + Send {
+    let (shutdown_tx, shutdown_rx) = channel();
+
     thread::Builder::new().name("World thread".to_string()).spawn(move || {
-      loop {
-        let result = consumer.process(job_rx.recv().unwrap());
-        if let Some(result) = result {
-          result_tx.send(result).unwrap();
+      while let Err(_) = shutdown_rx.try_recv() {
+        if let Ok(job) = job_rx.recv() {
+          if let Some(result) = consumer.process(job) {
+            result_tx.send(result).unwrap();
+          }
+        }
+        else {
+          break;
         }
       }
+      println!("shutdown");
     }).unwrap();
 
-    HelperConsumer {}
+    HelperConsumer {
+      shutdown_tx: shutdown_tx,
+    }
+  }
+}
+
+impl HelperConsumer {
+  fn shutdown(&mut self) {
+    self.shutdown_tx.send(()).unwrap();
   }
 }
 
@@ -173,5 +190,11 @@ impl<T, R> ConsumerPool<T, R> where T : 'static + Send, R : 'static + Send {
 
   pub fn process_until<F>(&mut self, until: F) where F : FnMut(&T) -> bool {
     self.main.process_until(until);
+  }
+
+  pub fn shutdown(&mut self) {
+    for helper in self.helpers.iter_mut() {
+      helper.shutdown();
+    }
   }
 }
